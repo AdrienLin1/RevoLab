@@ -34,6 +34,26 @@ parser.add_argument("--export_io_descriptors", action="store_true", default=Fals
 parser.add_argument(
     "--ray-proc-id", "-rid", type=int, default=None, help="Automatically configured by Ray integration, otherwise None."
 )
+parser.add_argument(
+    "--init_checkpoint",
+    type=str,
+    default=None,
+    help="Initialize actor/critic weights from this checkpoint before training (optimizer and iteration are not loaded).",
+)
+# TacSL tactile visualization (only meaningful for *-Lift-Tactile-* tasks)
+parser.add_argument(
+    "--visualize_tactile",
+    action="store_true",
+    default=False,
+    help="Save/show TacSL fingertip tactile images during training. Implies --enable_cameras.",
+)
+parser.add_argument("--tactile_vis_every", type=int, default=2, help="Render tactile images every N env steps.")
+parser.add_argument(
+    "--tactile_vis_show", action="store_true", default=False, help="Show a live OpenCV window (needs a display)."
+)
+parser.add_argument(
+    "--tactile_vis_dir", type=str, default=None, help="Output dir for tactile frames (default: <log_dir>/tactile_vis)."
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -42,6 +62,10 @@ args_cli, hydra_args = parser.parse_known_args()
 
 # always enable cameras to record video
 if args_cli.video:
+    args_cli.enable_cameras = True
+
+# tactile visualization renders fingertip cameras, so it needs cameras enabled too
+if args_cli.visualize_tactile:
     args_cli.enable_cameras = True
 
 # clear out sys.argv for Hydra
@@ -170,6 +194,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
+    # Drop the shaped 'tactile' observation group before building the env. The RL policy never
+    # consumes it (obs_groups only use policy/proprio/perception; the policy's tactile signal is
+    # the per-finger contact force inside 'proprio'), and rsl-rl's NaN check cannot traverse the
+    # nested TensorDict it produces (it raises "Multiple dispatch failed for 'torch.isnan'").
+    # The TacSL sensors stay in the scene, so the visualization wrapper still reads their data.
+    if hasattr(env_cfg, "observations") and getattr(env_cfg.observations, "tactile", None) is not None:
+        env_cfg.observations.tactile = None
+        print("[INFO] Dropped 'tactile' observation group for RL (TacSL sensors kept in the scene).")
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -193,6 +226,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
+    # wrap for live/on-disk TacSL tactile visualization (before the rsl-rl wrapper so its
+    # step() is called on every environment step during training)
+    if args_cli.visualize_tactile:
+        import tactile_vis
+
+        tac_dir = args_cli.tactile_vis_dir or os.path.join(log_dir, "tactile_vis")
+        env = tactile_vis.TactileVizWrapper(
+            env,
+            out_dir=tac_dir,
+            every=args_cli.tactile_vis_every,
+            show=args_cli.tactile_vis_show,
+        )
+
     start_time = time.time()
 
     # wrap around environment for rsl-rl
@@ -212,6 +258,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
+    elif args_cli.init_checkpoint:
+        # warm-start model weights only (fresh optimizer and iteration counter)
+        print(f"[INFO]: Initializing model weights from: {args_cli.init_checkpoint}")
+        runner.load(
+            args_cli.init_checkpoint,
+            load_cfg={"actor": True, "critic": True, "optimizer": False, "iteration": False, "rnd": False},
+        )
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)

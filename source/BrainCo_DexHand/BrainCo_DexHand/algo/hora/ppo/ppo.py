@@ -6,8 +6,8 @@ Training loop: collect horizon_length (8) steps × num_envs → GAE returns →
 Value bootstrap: when episode truncates (timeout, not termination), the last
   value estimate bootstraps the return to avoid penalizing unfinished episodes.
 
-Gotcha — minibatch_size: must divide batch_size (num_envs × 8) exactly.
-  train.py enforces num_envs >= 4096 and num_envs%4096==0.
+Minibatch size must divide batch_size (num_envs × horizon) exactly. train.py
+  resolves the configured preferred maximum to an exact divisor at runtime.
 
 Gotcha — reward_scale: total reward × 0.01 before GAE. Env extras (scalar means)
   are logged to TensorBoard via extra_info dict.
@@ -89,7 +89,11 @@ class PPO(object):
         self.batch_size = self.horizon_length * self.num_actors
         self.minibatch_size = self.ppo_config['minibatch_size']
         self.mini_epochs_num = self.ppo_config['mini_epochs']
-        assert self.batch_size % self.minibatch_size == 0 or full_config.test
+        if not full_config.test and self.batch_size % self.minibatch_size != 0:
+            raise ValueError(
+                f'PPO batch_size ({self.batch_size}) must be divisible by minibatch_size '
+                f'({self.minibatch_size}).'
+            )
         # ---- scheduler ----
         self.kl_threshold = self.ppo_config['kl_threshold']
         self.scheduler = AdaptiveScheduler(self.kl_threshold)

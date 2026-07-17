@@ -13,7 +13,11 @@ class DexsuiteRevo3PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """PPO runner configuration for Revo3 dexsuite tasks."""
 
     num_steps_per_env = 32
-    obs_groups = {"policy": ["policy", "proprio", "perception"], "critic": ["policy", "proprio", "perception"]}
+    # rsl-rl >= 5.0 selects the actor network's input from the "actor" observation set. Without an
+    # explicit "actor" key it silently falls back to just the group named "policy" (small proprio
+    # vector), which mismatches checkpoints trained with the full observation. Name the set "actor"
+    # so the actor consumes policy+proprio+perception (matches the pretrained Lift checkpoint).
+    obs_groups = {"actor": ["policy", "proprio", "perception"], "critic": ["policy", "proprio", "perception"]}
     max_iterations = 15000
     save_interval = 250
     experiment_name = "dexsuite_tianji"
@@ -41,3 +45,10 @@ class DexsuiteRevo3PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class DexsuiteUr5eRevo3PPORunnerCfg(DexsuiteRevo3PPORunnerCfg):
+    """PPO runner configuration for UR5e + Revo3 dexsuite tasks."""
+
+    experiment_name = "dexsuite_ur5e"

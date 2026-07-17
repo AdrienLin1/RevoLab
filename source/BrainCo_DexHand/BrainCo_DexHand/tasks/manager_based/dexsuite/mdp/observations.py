@@ -283,3 +283,15 @@ def tactile_rgb_image(env: ManagerBasedRLEnv, tactile_sensor_names: list[str]) -
     """TacSL tactile RGB images stacked as ``(num_envs, num_sensors, H, W, 3)``."""
 
     return _stack_tactile_sensor_attr(env, tactile_sensor_names, "tactile_rgb_image")
+
+
+def tactile_normal_force(env: ManagerBasedRLEnv, tactile_sensor_names: list[str]) -> torch.Tensor:
+    """TacSL normal force fields stacked as ``(num_envs, num_sensors, num_taxels)``."""
+
+    return _stack_tactile_sensor_attr(env, tactile_sensor_names, "tactile_normal_force")
+
+
+def tactile_shear_force(env: ManagerBasedRLEnv, tactile_sensor_names: list[str]) -> torch.Tensor:
+    """TacSL shear force fields stacked as ``(num_envs, num_sensors, num_taxels, 2)``."""
+
+    return _stack_tactile_sensor_attr(env, tactile_sensor_names, "tactile_shear_force")
