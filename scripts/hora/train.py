@@ -36,11 +36,13 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser()
 parser.add_argument('--task', type=str, default='cylinder',
                     choices=['ball', 'cylinder', 'nutbolt', 'screwdriver',
-                             'nutbolt_tactile', 'screwdriver_tactile'])
+                             'nutbolt_tactile', 'screwdriver_tactile',
+                             'valvedriver_tactile', 'valvedriver_tactile_40',
+                             'vavledriver_tactile'])
 parser.add_argument('--algo', type=str, default='PPO', choices=['PPO', 'ProprioAdapt'])
 parser.add_argument('--train_cfg', type=str, default='',
                     help='Train yaml name (default: Revo3HandHora for ball/cylinder, '
-                         'Revo3HandScrew for nutbolt/screwdriver).')
+                         'Revo3HandScrew for screw/valve tasks).')
 parser.add_argument('--output_name', type=str, default='debug')
 parser.add_argument('--checkpoint', type=str, default='')
 parser.add_argument('--cache_file', type=str, default='', help='Override grasp cache filename under assets/grasp_cache/hora/.')
@@ -52,7 +54,11 @@ parser.add_argument('--force_overwrite', action='store_true')
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
-_TACTILE_SCREW_TASKS = ('nutbolt_tactile', 'screwdriver_tactile')
+_TACTILE_SCREW_TASKS = (
+    'nutbolt_tactile', 'screwdriver_tactile',
+    'valvedriver_tactile', 'valvedriver_tactile_40',
+    'vavledriver_tactile',  # backward-compatible alias for the original typo
+)
 _SCREW_TASKS = ('nutbolt', 'screwdriver') + _TACTILE_SCREW_TASKS
 if not args.train_cfg:
     if args.task in _TACTILE_SCREW_TASKS:
@@ -123,6 +129,7 @@ from omegaconf import OmegaConf
 from termcolor import cprint
 
 from BrainCo_DexHand.algo.hora.padapt.padapt import ProprioAdapt
+from BrainCo_DexHand.algo.hora.padapt.tactile_dagger import TactileDAgger
 from BrainCo_DexHand.algo.hora.ppo.ppo import PPO
 from BrainCo_DexHand.algo.hora.utils.misc import set_np_formatting, set_seed
 from BrainCo_DexHand.tasks.direct.hora_rotation.assets import (
@@ -141,6 +148,8 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env import
 from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env_cfg import (
     Revo3HandScrewDriverTactileEnvCfg,
     Revo3HandScrewNutBoltTactileEnvCfg,
+    Revo3HandValveDriver40TactileEnvCfg,
+    Revo3HandVavleDriverTactileEnvCfg,
 )
 
 
@@ -207,6 +216,9 @@ _SCREW_ENV_CFG = {
     'screwdriver': Revo3HandScrewDriverEnvCfg,
     'nutbolt_tactile': Revo3HandScrewNutBoltTactileEnvCfg,
     'screwdriver_tactile': Revo3HandScrewDriverTactileEnvCfg,
+    'valvedriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
+    'valvedriver_tactile_40': Revo3HandValveDriver40TactileEnvCfg,
+    'vavledriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
 }
 
 
@@ -279,8 +291,11 @@ def main():
                 flush=True,
             )
             full_config.train.ppo.priv_info_dim = env_priv_dim
-    if args.algo == 'ProprioAdapt':
+    if args.algo == 'ProprioAdapt' and args.task not in _TACTILE_SCREW_TASKS:
         env_cfg.enable_contact_in_obs = False  # Stage2: actor sees zero contact, adapt_tconv still sees contact history
+    # Tactile tasks keep enable_contact_in_obs=True in Stage2: the DAgger teacher
+    # labels actions with its original Stage1 observation (incl. real contacts);
+    # the student only reads the 366-dim student_proprio_hist/student_tactile_hist.
     if args.test:
         env_cfg.gravity_curriculum = False
         env_cfg.sim.gravity = (0.0, 0.0, -9.81)  # full gravity for test/play
@@ -321,7 +336,11 @@ def main():
     algo_name = str(full_config.train.algo)
     if algo_name not in _ALGO_MAP:
         raise ValueError(f"Unsupported algo: {algo_name}. Available: {list(_ALGO_MAP.keys())}")
-    agent = _ALGO_MAP[algo_name](env, output_dif, full_config=full_config)
+    agent_cls = _ALGO_MAP[algo_name]
+    if algo_name == 'ProprioAdapt' and args.task in _TACTILE_SCREW_TASKS:
+        # tactile screw tasks distill into a real-robot-obs student (366 dims) via DAgger
+        agent_cls = TactileDAgger
+    agent = agent_cls(env, output_dif, full_config=full_config)
 
     if args.test:
         agent.restore_test(full_config.train.load_path)

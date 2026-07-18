@@ -1,4 +1,4 @@
-"""Environment config for Revo3 right hand HORA screw tasks (nut-bolt / screwdriver).
+"""Environment config for Revo3 right hand HORA screw/valve tasks.
 
 Ported from dexscrew XHandHoraNutBolt / XHandHoraScrewDriver (Isaac Gym) into the
 Isaac Lab DirectRLEnv workflow, following the structure of hora_rotation.
@@ -15,8 +15,11 @@ from isaaclab.utils import configclass
 from .assets import (
     REVO3_HAND_DRIVER_CFG,
     REVO3_HAND_NUTBOLT_CFG,
+    REVO3_HAND_VAVLE_DRIVER_CFG,
     SCREW_DRIVER_CFG,
+    SCREW_VALVE_DRIVER_40_CFG,
     SCREW_TRINUT_CFG,
+    SCREW_VAVLE_DRIVER_CFG,
 )
 
 
@@ -118,12 +121,18 @@ class Revo3HandScrewEnvCfg(DirectRLEnvCfg):
     work_penalty_scale = -0.01
     rotate_penalty_scale = -0.3
     proximity_reward_scale = 2.0
+    # Fingertips used by the proximity reward. Existing tasks preserve the
+    # dexscrew thumb/index behavior; the valve variant uses all five fingers.
+    proximity_fingertip_indices = (0, 1)
 
     # ---- terminations ----
     # thumb/index fingertip distance to the nut grasp center. dexscrew uses 0.05 with
     # true tip frames; Revo3 only exposes DIP link origins (~2-3 cm behind the pad,
     # measured rest distance ~0.04-0.05), hence the larger threshold.
     reset_dist_threshold = 0.08
+    # When False, the thumb/index distance reset is skipped entirely; the
+    # threshold above still normalizes the proximity reward.
+    enable_finger_dist_reset = True
     nut_termination_history_len = 70
     nut_stagnation_eps = 0.003
     screw_upper_limit = 628.3185
@@ -248,3 +257,48 @@ class Revo3HandScrewDriverEnvCfg(Revo3HandScrewEnvCfg):
         self.proximity_reward_scale = 2.0
         self.nut_termination_history_len = 60
         super().__post_init__()
+
+
+@configclass
+class Revo3HandVavleDriverEnvCfg(Revo3HandScrewEnvCfg):
+    """Turn a hand-sized hexagonal valve handle with all 21 hand joints."""
+
+    def __post_init__(self):
+        self.robot_cfg = REVO3_HAND_VAVLE_DRIVER_CFG
+        self.object_cfg = SCREW_VAVLE_DRIVER_CFG
+        self.nut_body_name = "valve"
+        self.nut_joint_name = "valve_to_shaft"
+        # The valve mesh spans z=[0.0, 0.08] in the rotating link frame.
+        self.nut_ref_offset = (0.0, 0.0, 0.04)
+
+        # Unlike screwdriver_tactile, every joint receives its policy action.
+        # Keep the common screw-task 0.9 joint-range margin.
+        self.masked_action_joint_names = []
+        self.dof_limits_scale = 0.9
+
+        # Keep screwdriver reward scales/curriculum. Only the proximity term is
+        # evaluated over all fingers to encourage a whole-hand valve wrap.
+        self.angvel_penalty_threshold = (7.5, 15.0, 30_000_000, 60_000_000)
+        self.rotate_reward_scale = 2.5
+        self.pose_diff_penalty_scale = -0.1
+        self.torque_penalty_scale = -3.0
+        self.work_penalty_scale = -0.01
+        self.rotate_penalty_scale = -0.3
+        self.proximity_reward_scale = 2.0
+        self.proximity_fingertip_indices = (0, 1, 2, 3, 4)
+        # No thumb/index distance reset: the whole-hand wrap is not required to
+        # keep those two tips near the grasp center. Stagnation, no-contact and
+        # joint-limit resets still apply.
+        self.enable_finger_dist_reset = False
+        self.nut_termination_history_len = 60
+        super().__post_init__()
+
+
+@configclass
+class Revo3HandValveDriver40EnvCfg(Revo3HandVavleDriverEnvCfg):
+    """The valve task with only the hex handle circumradius changed to 40 mm."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Everything else is inherited unchanged from the 30 mm valve task.
+        self.object_cfg = SCREW_VALVE_DRIVER_40_CFG

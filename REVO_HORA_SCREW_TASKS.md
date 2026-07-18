@@ -352,3 +352,37 @@ python scripts/hora/train.py --task screwdriver_tactile --num_envs 16384 --headl
 `revo3_hand_screw_tactile_env_cfg.py` 的 `tactile_force_scale` /
 `tactile_array_pool`，或增大 `normal_contact_stiffness`）；SDF 碰撞对
 finger-gaiting 动力学的影响（凸包→精确网格，接触更真实但求解更贵）。
+
+---
+
+## 八、五指六棱柱阀门任务 `valvedriver_tactile`
+
+该任务独立复用 screw/tactile 环境框架，不修改已有任务的资产和任务参数：
+
+```bash
+# Stage 1
+python scripts/hora/train.py --task valvedriver_tactile --num_envs 16384 --headless
+
+# 小规模冒烟
+python scripts/hora/train.py --task valvedriver_tactile \
+    --train_cfg Revo3HandScrewTactileSmoke --num_envs 128 --headless
+
+# 40 mm 外接圆半径版本；除阀柄半径外配置完全相同
+python scripts/hora/train.py --task valvedriver_tactile_40 --num_envs 16384 --headless
+```
+
+- 阀柄资产位于 `assets/urdf/screw/vavledriver/`，是外接圆半径 30 mm、
+  高 80 mm 的正六棱柱（对边 51.96 mm），通过 `valve_to_shaft` 被动转动关节
+  绕竖直轴旋转。碰撞几何使用闭合三角网格，兼容触觉环境的 SDF 替换。
+- 灵巧手 21 个关节全部接收策略动作，`masked_action_joint_names=[]`，并保留基类
+  的 0.9 关节行程缩放。手根位置调整到 `(0, 0.078, 0.195)`，关节
+  初值由已验证的半径 30 mm 圆柱抓握手型微调为五指分布在不同平面上的包裹姿态。
+- 旋转、角速度课程、姿态、力矩、功率等权重与 `screwdriver_tactile` 一致。
+  唯一奖励调整是接近奖励由拇指/食指平均距离改为五指平均距离，尺度仍为 2.0，
+  目的是鼓励整手包裹和多指协同，而不是只形成两指夹持。
+- 终止条件调整：两个阀门任务均移除了"拇指或食指指尖离抓取中心超过 0.08 m
+  即回合重置"的条件（`enable_finger_dist_reset=False`，其余任务默认仍为 True）。
+  停滞、无接触、转轴上限三种重置保持不变；0.08 m 阈值仍用于接近奖励的归一化。
+- `valvedriver_tactile_40` 仅把阀柄外接圆半径从 30 mm 放大为 40 mm；手部初始
+  位姿、动作与行程范围、奖励、触觉、随机化、终止条件和其余对象参数均不变。
+  旧拼写 `vavledriver_tactile` 仍作为 30 mm 任务的兼容别名保留。

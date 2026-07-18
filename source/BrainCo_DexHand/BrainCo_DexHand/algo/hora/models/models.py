@@ -44,6 +44,85 @@ class ProprioAdaptTConv(nn.Module):
         return x
 
 
+class TactileHistoryEncoder(nn.Module):
+    """Spatio-temporal encoder for the student's binary tactile history.
+
+    (N, history_len=10, frame_dim=240) {0,1} frames -> (N, output_dim=240).
+    Per-frame channel transform + strided temporal convs (ProprioAdaptTConv style);
+    the two conv layers' receptive field spans all 10 frames.
+    """
+
+    def __init__(self, frame_dim=240, history_len=10, output_dim=240):
+        super(TactileHistoryEncoder, self).__init__()
+        if history_len != 10:
+            raise ValueError(f'TactileHistoryEncoder temporal convs expect history_len=10, got {history_len}')
+        self.frame_dim = frame_dim
+        self.history_len = history_len
+        self.output_dim = output_dim
+        self.channel_transform = nn.Sequential(
+            nn.Linear(frame_dim, 256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 256),
+            nn.ReLU(inplace=True),
+        )
+        self.temporal_aggregation = nn.Sequential(
+            nn.Conv1d(256, 256, (4,), stride=(2,)),  # 10 -> 4
+            nn.ReLU(inplace=True),
+            nn.Conv1d(256, 256, (4,), stride=(1,)),  # 4 -> 1
+            nn.ReLU(inplace=True),
+        )
+        self.low_dim_proj = nn.Linear(256, output_dim)
+
+    def forward(self, x):
+        x = self.channel_transform(x)  # (N, history_len, 256)
+        x = x.permute((0, 2, 1))
+        x = self.temporal_aggregation(x)  # (N, 256, 1)
+        x = self.low_dim_proj(x.flatten(1))
+        return x
+
+
+class TactileStudentPolicy(nn.Module):
+    """DAgger student for the tactile screw tasks (real-robot sensing only).
+
+    obs = [proprio_hist flattened (3*42=126) | tactile embedding (240)] -> MLP -> mu (21).
+    Deterministic; trained with MSE against the frozen teacher's actions.
+    """
+
+    def __init__(self, kwargs):
+        nn.Module.__init__(self)
+        actions_num = kwargs.pop('actions_num')
+        self.units = kwargs.pop('actor_units')
+        self.proprio_hist_len = kwargs.pop('proprio_hist_len')
+        self.proprio_frame_dim = kwargs.pop('proprio_frame_dim')
+        self.tactile_encoder = TactileHistoryEncoder(
+            frame_dim=kwargs.pop('tactile_frame_dim'),
+            history_len=kwargs.pop('tactile_hist_len'),
+            output_dim=kwargs.pop('tactile_emb_dim'),
+        )
+        self.obs_dim = self.proprio_hist_len * self.proprio_frame_dim + self.tactile_encoder.output_dim
+        self.actor_mlp = MLP(units=self.units, input_size=self.obs_dim)
+        self.mu = torch.nn.Linear(self.units[-1], actions_num)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Conv1d):
+                fan_out = m.kernel_size[0] * m.out_channels
+                m.weight.data.normal_(mean=0.0, std=np.sqrt(2.0 / fan_out))
+                if getattr(m, 'bias', None) is not None:
+                    torch.nn.init.zeros_(m.bias)
+            if isinstance(m, nn.Linear):
+                if getattr(m, 'bias', None) is not None:
+                    torch.nn.init.zeros_(m.bias)
+
+    def build_obs(self, proprio_hist, tactile_hist):
+        """(N, 3, 42) proprio + (N, 10, 240) binary tactile -> (N, 366) student obs."""
+        tactile_emb = self.tactile_encoder(tactile_hist)
+        return torch.cat([proprio_hist.flatten(1), tactile_emb], dim=-1), tactile_emb
+
+    def forward(self, proprio_hist, tactile_hist):
+        obs, _ = self.build_obs(proprio_hist, tactile_hist)
+        return self.mu(self.actor_mlp(obs))
+
+
 class ActorCritic(nn.Module):
     def __init__(self, kwargs):
         nn.Module.__init__(self)

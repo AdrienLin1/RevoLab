@@ -1,4 +1,4 @@
-"""Asset configs for Revo3 right hand HORA screw tasks (nut-bolt / screwdriver).
+"""Asset configs for Revo3 right hand HORA screw/valve tasks.
 
 Ported from dexscrew XHandHoraNutBolt / XHandHoraScrewDriver (Isaac Gym) to Isaac Lab.
 
@@ -25,6 +25,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[6]
 _REVO3_USD = str(_REPO_ROOT / "assets" / "usd" / "revo3_right.usd")
 _TRINUT_URDF = str(_REPO_ROOT / "assets" / "urdf" / "screw" / "trinut" / "trinut.urdf")
 _DRIVER_URDF = str(_REPO_ROOT / "assets" / "urdf" / "screw" / "driver" / "driver_8.urdf")
+_VAVLE_DRIVER_URDF = str(
+    _REPO_ROOT / "assets" / "urdf" / "screw" / "vavledriver" / "vavledriver_hex.urdf"
+)
+_VALVE_DRIVER_40_URDF = str(
+    _REPO_ROOT / "assets" / "urdf" / "screw" / "vavledriver" / "valvedriver_hex_40.urdf"
+)
 
 # Hand orientation: HORA palm-up grasp quat (0.59636781, 0.37992820, -0.37992820,
 # 0.59636781) pre-rotated by R_y(180 deg) -> palm faces straight down (-Z).
@@ -35,12 +41,16 @@ HAND_INIT_ROT = (0.37992820, 0.59636781, 0.59636781, -0.37992820)
 #   driver handle center: (0, 0, 0.07)   -> hand root (0, 0.08, 0.205)
 HAND_INIT_POS_NUTBOLT = (0.0, 0.08, 0.204)
 HAND_INIT_POS_DRIVER = (0.0, 0.08, 0.205)
+# The valve grasp center is at z=0.06.  Move the palm 2 mm closer in Y than
+# the cylinder-derived pose so all five fingers begin near the 52 mm flats.
+HAND_INIT_POS_VAVLE_DRIVER = (0.0, 0.078, 0.195)
 
 # Screw objects stand upright at the env origin, base disc on the ground
 # (dexscrew reset places the object at z=0 with identity rotation).
 OBJECT_INIT_ROT = (1.0, 0.0, 0.0, 0.0)
 TRINUT_INIT_POS = (0.0, 0.0, 0.0)
 DRIVER_INIT_POS = (0.0, 0.0, 0.0)
+VAVLE_DRIVER_INIT_POS = (0.0, 0.0, 0.0)
 
 
 def _make_hand_cfg(joint_pos: dict[str, float], init_pos: tuple[float, float, float]) -> ArticulationCfg:
@@ -116,6 +126,23 @@ REVO3_HAND_DRIVER_CFG = _make_hand_cfg({
     "right_little_PIP_joint": 0.45, "right_little_DIP_joint": 0.05,
 }, HAND_INIT_POS_DRIVER)
 
+# Five-finger wrap for the larger valve handle (hex circumradius 0.03 m).  The
+# pose starts from the proven r=0.03 cylinder grasp, with small asymmetric MPR/
+# PIP offsets so the fingertips settle on different flats instead of stacking.
+REVO3_HAND_VAVLE_DRIVER_CFG = _make_hand_cfg({
+    "right_thumb_CMP_joint":  1.60, "right_thumb_CMR_joint":  1.30,
+    "right_thumb_MCP_joint":  0.38, "right_thumb_PIP_joint":  0.22,
+    "right_thumb_DIP_joint":  0.03,
+    "right_index_MPR_joint": -0.22, "right_index_MCP_joint":  1.18,
+    "right_index_PIP_joint":  0.28, "right_index_DIP_joint":  0.03,
+    "right_middle_MPR_joint": 0.00, "right_middle_MCP_joint": 0.94,
+    "right_middle_PIP_joint": 0.22, "right_middle_DIP_joint": 0.03,
+    "right_ring_MPR_joint":   0.18, "right_ring_MCP_joint":   0.96,
+    "right_ring_PIP_joint":   0.24, "right_ring_DIP_joint":   0.03,
+    "right_little_MPR_joint": 0.22, "right_little_MCP_joint": 1.18,
+    "right_little_PIP_joint": 0.30, "right_little_DIP_joint": 0.03,
+}, HAND_INIT_POS_VAVLE_DRIVER)
+
 
 def _make_screw_cfg(urdf_path: str, init_pos: tuple[float, float, float],
                     nut_joint_name: str) -> ArticulationCfg:
@@ -167,3 +194,9 @@ def _make_screw_cfg(urdf_path: str, init_pos: tuple[float, float, float],
 
 SCREW_TRINUT_CFG = _make_screw_cfg(_TRINUT_URDF, TRINUT_INIT_POS, "nut_joint")
 SCREW_DRIVER_CFG = _make_screw_cfg(_DRIVER_URDF, DRIVER_INIT_POS, "handle_to_shaft")
+SCREW_VAVLE_DRIVER_CFG = _make_screw_cfg(
+    _VAVLE_DRIVER_URDF, VAVLE_DRIVER_INIT_POS, "valve_to_shaft"
+)
+SCREW_VALVE_DRIVER_40_CFG = _make_screw_cfg(
+    _VALVE_DRIVER_40_URDF, VAVLE_DRIVER_INIT_POS, "valve_to_shaft"
+)

@@ -45,6 +45,33 @@ gym.register(
     },
 )
 
+gym.register(
+    id="BrainCo-Direct-Revo3-HoraVavleDriverTactile-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_env:Revo3HandScrewTactileEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandVavleDriverTactileEnvCfg",
+    },
+)
+
+gym.register(
+    id="BrainCo-Direct-Revo3-HoraValveDriverTactile-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_env:Revo3HandScrewTactileEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandVavleDriverTactileEnvCfg",
+    },
+)
+
+gym.register(
+    id="BrainCo-Direct-Revo3-HoraValveDriverTactile40-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_env:Revo3HandScrewTactileEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandValveDriver40TactileEnvCfg",
+    },
+)
+
 # Short aliases matching the requested task names.
 gym.register(
     id="RevoHoraNutBolt-v0",
@@ -79,5 +106,32 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandScrewDriverTactileEnvCfg",
+    },
+)
+
+gym.register(
+    id="RevoHoraVavleDriverTactile-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_env:Revo3HandScrewTactileEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandVavleDriverTactileEnvCfg",
+    },
+)
+
+gym.register(
+    id="RevoHoraValveDriverTactile-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_env:Revo3HandScrewTactileEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandVavleDriverTactileEnvCfg",
+    },
+)
+
+gym.register(
+    id="RevoHoraValveDriverTactile40-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_env:Revo3HandScrewTactileEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandValveDriver40TactileEnvCfg",
     },
 )

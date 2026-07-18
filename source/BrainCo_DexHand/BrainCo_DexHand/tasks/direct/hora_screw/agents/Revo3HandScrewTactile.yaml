@@ -1,4 +1,4 @@
-# Training config for HORA Revo3 tactile screw tasks (nutbolt_tactile / screwdriver_tactile).
+# Training config for HORA Revo3 tactile screw/valve tasks.
 # Identical to Revo3HandScrew.yaml except priv_info_dim: the teacher observation is
 # extended with 5x TacSL fingertip arrays pooled to 4x4x3 (11 + 5*48 = 251).
 # num_actors is overridden at runtime from env.num_envs.

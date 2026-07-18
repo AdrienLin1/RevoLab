@@ -107,6 +107,14 @@ class Revo3HandScrewEnv(DirectRLEnv):
         for body_name in self.cfg.fingertip_body_names:
             self.finger_bodies.append(self.hand.body_names.index(body_name))
         self.num_fingertips = len(self.finger_bodies)
+        proximity_finger_ids = tuple(self.cfg.proximity_fingertip_indices)
+        if not proximity_finger_ids or any(i < 0 or i >= self.num_fingertips for i in proximity_finger_ids):
+            raise ValueError(
+                f"proximity_fingertip_indices must contain valid fingertip indices, got {proximity_finger_ids}"
+            )
+        self.proximity_finger_ids = torch.tensor(
+            proximity_finger_ids, dtype=torch.long, device=self.device
+        )
 
         # screw object indices
         self.nut_body_idx = self.object.body_names.index(self.cfg.nut_body_name)
@@ -354,10 +362,16 @@ class Revo3HandScrewEnv(DirectRLEnv):
         torque_penalty = (self.torques[:, self.actuated_dof_indices] ** 2).sum(-1)
         work_penalty = ((torch.abs(self.torques[:, self.actuated_dof_indices]) * torch.abs(self.hand_dof_vel[:, self.actuated_dof_indices])).sum(-1)) ** 2
 
-        # proximity of thumb & index fingertips to the nut grasp center
+        # Proximity to the grasp center. dexscrew uses thumb/index; task variants
+        # may include more fingertips without changing the reward formulation.
         thumb_dist = torch.norm(self.fingertip_pos[:, 0] - self.nut_ref_pos, dim=-1)
         index_dist = torch.norm(self.fingertip_pos[:, 1] - self.nut_ref_pos, dim=-1)
-        mean_dist = 0.5 * (thumb_dist + index_dist)
+        proximity_fingertip_pos = torch.index_select(
+            self.fingertip_pos, dim=1, index=self.proximity_finger_ids
+        )
+        mean_dist = torch.norm(
+            proximity_fingertip_pos - self.nut_ref_pos.unsqueeze(1), dim=-1
+        ).mean(dim=1)
         proximity_reward = torch.clamp(1.0 - mean_dist / self.cfg.reset_dist_threshold, min=0.0, max=1.0)
 
         total_reward = (
@@ -381,6 +395,7 @@ class Revo3HandScrewEnv(DirectRLEnv):
         self.extras["screw/positive_vel_ratio"] = (nut_dof_linvel > 0).float().mean()
         self.extras["screw/thumb_nut_dist"] = thumb_dist.mean()
         self.extras["screw/index_nut_dist"] = index_dist.mean()
+        self.extras["screw/proximity_finger_dist"] = mean_dist.mean()
         self.extras["total_reward"] = total_reward.mean()
         return total_reward
 
@@ -392,9 +407,12 @@ class Revo3HandScrewEnv(DirectRLEnv):
         self._refresh_lab()
         time_out = self.episode_length_buf >= self.max_episode_length
 
-        thumb_dist = torch.norm(self.fingertip_pos[:, 0] - self.nut_ref_pos, dim=-1)
-        index_dist = torch.norm(self.fingertip_pos[:, 1] - self.nut_ref_pos, dim=-1)
-        finger_dist_reset = (thumb_dist > self.cfg.reset_dist_threshold) | (index_dist > self.cfg.reset_dist_threshold)
+        if self.cfg.enable_finger_dist_reset:
+            thumb_dist = torch.norm(self.fingertip_pos[:, 0] - self.nut_ref_pos, dim=-1)
+            index_dist = torch.norm(self.fingertip_pos[:, 1] - self.nut_ref_pos, dim=-1)
+            finger_dist_reset = (thumb_dist > self.cfg.reset_dist_threshold) | (index_dist > self.cfg.reset_dist_threshold)
+        else:
+            finger_dist_reset = torch.zeros_like(time_out)
 
         hist_filled = self.episode_length_buf >= self.cfg.nut_termination_history_len
         nut_pos_var = torch.var(self.nut_dof_pos_history, dim=1)

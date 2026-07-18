@@ -34,12 +34,14 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser()
 parser.add_argument('--task', type=str, default='nutbolt',
                     choices=['ball', 'cylinder', 'nutbolt', 'screwdriver',
-                             'nutbolt_tactile', 'screwdriver_tactile'])
+                             'nutbolt_tactile', 'screwdriver_tactile',
+                             'valvedriver_tactile', 'valvedriver_tactile_40',
+                             'vavledriver_tactile'])
 parser.add_argument('--checkpoint', type=str, required=True,
                     help='Stage1 checkpoint (.pth) from stage1_nn/, e.g. .../stage1_nn/best.pth')
 parser.add_argument('--train_cfg', type=str, default='',
                     help='Train yaml name (default: Revo3HandHora for ball/cylinder, '
-                         'Revo3HandScrew for nutbolt/screwdriver).')
+                         'Revo3HandScrew for screw/valve tasks).')
 parser.add_argument('--num_envs', type=int, default=16)
 parser.add_argument('--steps', type=int, default=0,
                     help='Number of control steps to run (0 = run until the window is closed).')
@@ -49,7 +51,11 @@ parser.add_argument('--seed', type=int, default=42)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
-_TACTILE_SCREW_TASKS = ('nutbolt_tactile', 'screwdriver_tactile')
+_TACTILE_SCREW_TASKS = (
+    'nutbolt_tactile', 'screwdriver_tactile',
+    'valvedriver_tactile', 'valvedriver_tactile_40',
+    'vavledriver_tactile',  # backward-compatible alias for the original typo
+)
 _SCREW_TASKS = ('nutbolt', 'screwdriver') + _TACTILE_SCREW_TASKS
 if not args.train_cfg:
     if args.task in _TACTILE_SCREW_TASKS:
@@ -88,6 +94,8 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env import
 from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env_cfg import (
     Revo3HandScrewDriverTactileEnvCfg,
     Revo3HandScrewNutBoltTactileEnvCfg,
+    Revo3HandValveDriver40TactileEnvCfg,
+    Revo3HandVavleDriverTactileEnvCfg,
 )
 
 _SCREW_ENV_CFG = {
@@ -95,6 +103,9 @@ _SCREW_ENV_CFG = {
     'screwdriver': Revo3HandScrewDriverEnvCfg,
     'nutbolt_tactile': Revo3HandScrewNutBoltTactileEnvCfg,
     'screwdriver_tactile': Revo3HandScrewDriverTactileEnvCfg,
+    'valvedriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
+    'valvedriver_tactile_40': Revo3HandValveDriver40TactileEnvCfg,
+    'vavledriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
 }
 
 

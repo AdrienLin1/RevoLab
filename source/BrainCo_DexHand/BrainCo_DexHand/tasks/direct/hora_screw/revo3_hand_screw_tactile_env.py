@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""DirectRLEnv for Revo3 HORA screw tasks with TacSL fingertip array sensing.
+"""DirectRLEnv for Revo3 HORA screw/valve tasks with TacSL fingertip array sensing.
 
 Extends Revo3HandScrewEnv with the tactile-revo3 TacSL force-field arrays:
 five 16x16 taxel grids (normal + 2D shear per taxel) on the fingertip
@@ -34,6 +34,14 @@ from .revo3_hand_screw_tactile_env_cfg import Revo3HandScrewTactileMixinCfg
 
 class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
     cfg: Revo3HandScrewTactileMixinCfg
+
+    def __init__(self, cfg: Revo3HandScrewTactileMixinCfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+        # Stage2 student: binary tactile history, one {0,1} frame per control step
+        self.student_tactile_hist_buf = torch.zeros(
+            (self.num_envs, self.cfg.student_tactile_history_len, self.cfg.student_tactile_frame_dim),
+            device=self.device, dtype=torch.float,
+        )
 
     def _setup_scene(self):
         # Mirrors Revo3HandScrewEnv._setup_scene, inserting the SDF collision
@@ -139,12 +147,42 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
         )
 
     def compute_observations(self):
+        # capture reset flags before the base class consumes them
+        at_reset_env_ids = self.at_reset_buf.nonzero(as_tuple=False).squeeze(-1)
         obs_buf = super().compute_observations()
         tactile = self._compute_tactile_array_features()
         self.priv_info_buf[:, self.cfg.tactile_priv_offset:] = tactile
         self.extras["tactile/priv_abs_mean"] = tactile.abs().mean()
         self.extras["tactile/priv_abs_max"] = tactile.abs().max()
+
+        # student binary tactile history: threshold the 240 pooled channels to {0,1},
+        # drop the oldest frame, append the current one
+        binary_tactile = torch.where(
+            tactile.abs() > self.cfg.student_tactile_contact_threshold, 1.0, 0.0)
+        self.student_tactile_hist_buf[:] = torch.cat(
+            [self.student_tactile_hist_buf[:, 1:], binary_tactile.unsqueeze(1)], dim=1)
+        # envs that just reset: fill the whole history with the first post-reset frame
+        # (same convention as obs_buf_lag_history)
+        if len(at_reset_env_ids) > 0:
+            self.student_tactile_hist_buf[at_reset_env_ids] = binary_tactile[at_reset_env_ids].unsqueeze(1).repeat(
+                1, self.cfg.student_tactile_history_len, 1)
+        self.extras["tactile/student_binary_mean"] = binary_tactile.mean()
         return obs_buf
+
+    def _get_observations(self) -> dict:
+        obs_dict = super()._get_observations()
+        # Stage2 student inputs (real-robot sensing only): the first 42 dims of each
+        # lag-history frame are joint_pos + current targets — no contact forces
+        obs_dict["student_proprio_hist"] = self.obs_buf_lag_history[
+            :, -self.cfg.student_proprio_history_len:, : self.cfg.student_proprio_frame_dim].clone()
+        obs_dict["student_tactile_hist"] = self.student_tactile_hist_buf.clone()
+        return obs_dict
+
+    def _reset_idx(self, env_ids):
+        if env_ids is None:
+            env_ids = self.hand._ALL_INDICES
+        super()._reset_idx(env_ids)
+        self.student_tactile_hist_buf[env_ids] = 0.0
 
     def _compute_tactile_array_features(self) -> torch.Tensor:
         """Pooled per-finger (normal, shear_x, shear_y) taxel grids, scaled and clipped.
