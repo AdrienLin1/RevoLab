@@ -388,3 +388,85 @@ python scripts/hora/train.py --task valvedriver_tactile_40 --num_envs 16384 --he
 - `valvedriver_tactile_40` 仅把阀柄外接圆半径从 30 mm 放大为 40 mm；手部初始
   位姿、动作与行程范围、奖励、触觉、随机化、终止条件和其余对象参数均不变。
   旧拼写 `vavledriver_tactile` 仍作为 30 mm 任务的兼容别名保留。
+
+---
+
+## 九、UR5e + Revo3 Dexsuite 抬升任务（2026-07-17 新增）
+
+从 `tactile-revo3` 仓库移植的两个 manager-based Dexsuite 任务（rsl_rl 工作流，
+与本文档前八节的 HORA Direct 工作流相互独立，互不影响）：
+
+- `BrainCo-Ur5e-Dexsuite-Revo3-Right-Lift-v0`：UR5e 机械臂 + Revo3 右手抬升方块；
+- `BrainCo-Ur5e-Dexsuite-Revo3-Right-Lift-Tactile-v0`：同任务 + TacSL 指尖力场传感
+  （力场模式，`enable_tactile_camera=False`，物体使用预烘焙 SDF 方块
+  `assets/usd/dexsuite/tactile_cube_sdf.usda`）；
+- 对应 `-Play-v0` / `-Tactile-Play-v0` 回放任务也已注册。
+
+### 启动训练
+
+```bash
+# 封装脚本（默认 base 4096 envs / tactile 512 envs，headless）
+./scripts/rsl_rl/train_ur5e_lift.sh base
+./scripts/rsl_rl/train_ur5e_lift.sh tactile
+./scripts/rsl_rl/train_ur5e_lift.sh base --num_envs 64 --max_iterations 2   # 冒烟
+
+# 或直接调用 rsl_rl 训练入口
+python scripts/rsl_rl/train.py --task BrainCo-Ur5e-Dexsuite-Revo3-Right-Lift-v0 \
+    --num_envs 4096 --headless
+python scripts/rsl_rl/train.py --task BrainCo-Ur5e-Dexsuite-Revo3-Right-Lift-Tactile-v0 \
+    --num_envs 512 --headless
+```
+
+触觉版默认 512 envs：TacSL 力场传感器（每指 16×16 taxel × 5 指）显存开销较大，
+沿用参考仓库的规模。
+
+### 移植清单
+
+直接拷贝（新增文件）：
+
+- `tasks/manager_based/dexsuite/dexsuite_env_cfg_grasp_ur5e.py`：UR5e 环境配置
+  （UR5e 6 关节 + Revo3 21 关节相对位置控制，手根挂在 `ur5e_robot/revo3_right` 前缀下）；
+- `BrainCo_DexHand/assets/ur5e_revo3_right.py`：UR5e+Revo3 组合机器人 ArticulationCfg；
+- `assets/usd/ur5e_revo3/`：组合 USD（引用共享 `revo3_right.usd` 和 UR5e 本体）
+  及触觉覆盖层 `ur5e_revo3_right_tactile.usda`；
+- `assets/urdf/ur5e/`（16 MB）：被组合 USD 引用的 UR5e 本体资产；
+- `scripts/rsl_rl/train_ur5e_lift.sh`：训练封装脚本。
+
+增量合并（保留 RevoLab 本地修改）：
+
+- `config/Revo3/tactile.py`：替换为 tactile-revo3 的超集版本（新增
+  `Revo3TacslTactileMixinCfg`、`body_path_prefix` 支持与 `Revo3VisuoTactileSensor`
+  的完整方法集；旧接口全部向后兼容，TacRes / Tianji 任务的引用不受影响）；
+- `mdp/observations.py`：追加 `tactile_normal_force` / `tactile_shear_force`；
+- `agents/rsl_rl_ppo_cfg.py`：追加 `DexsuiteUr5eRevo3PPORunnerCfg`
+  （继承本地已修复 "actor" obs_groups 键的 `DexsuiteRevo3PPORunnerCfg`）；
+- `config/Revo3/__init__.py`：追加 4 个 UR5e 注册，TacRes 注册原样保留。
+
+### train.py 的必要修改：无条件丢弃 "tactile" 观测组
+
+rsl-rl 5.x 在 `learn()` 开头执行 `check_nan(obs)`，无法遍历未拼接的 "tactile"
+观测组产生的嵌套 TensorDict（报错 `Multiple dispatch failed for 'torch.isnan'`）。
+`scripts/rsl_rl/train.py` 原本只在 `--visualize_tactile` 时丢弃该组，现改为**无条件**
+丢弃。不损失训练信号：actor/critic 的 obs_groups 只消费 policy/proprio/perception，
+策略实际使用的触觉信号是 `proprio` 组内的 5 指 3D 接触力；"tactile" 组（力场阵列/
+触觉图像）仅用于调试与导出，TacSL 传感器仍在场景中，`--visualize_tactile` 可视化
+不受影响。该修改同时修复了 Tianji Lift-Tactile 任务不带该参数时的同款崩溃。
+
+### 冒烟测试记录（2026-07-17，headless，2 iterations，均 exit 0）
+
+```bash
+# UR5e base（64 envs）：PPO 正常迭代，mean reward 0.13 -> 0.20
+# UR5e tactile（32 envs）：TacSL 力场初始化成功，mean reward 0.14 -> 0.24，
+#   日志含 "Dropped 'tactile' observation group for RL"
+# 回归：BrainCo-Dexsuite-Revo3-Right-Lift-v0（64 envs）行为不变
+```
+
+### 备注
+
+- UR5e 触觉任务沿用上游默认 `tactile_debug_vis=True`（GUI 下可见指尖 taxel 点阵
+  marker）；正式长训如嫌开销可在 `dexsuite_env_cfg_grasp_ur5e.py` 的
+  `UR5eRevo3TactileMixinCfg` 中关闭。
+- 触觉版策略输入与 base 版相同（proprio 内的接触力即触觉通道）；若要把力场阵列
+  直接喂给策略网络，需扩展 runner 的 obs_groups 并恢复 "tactile" 组，属后续工作。
+- 长训验证事项：抬升成功率曲线、TacSL 力场对抓取稳定性的实际增益、512 envs
+  下的吞吐量。

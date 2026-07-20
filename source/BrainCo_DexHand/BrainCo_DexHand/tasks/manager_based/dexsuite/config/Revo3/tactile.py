@@ -303,7 +303,7 @@ if _VisuoTactileSensor is not None:
             radius_sq = normalized_uv[:, 0] ** 2 + 0.55 * normalized_uv[:, 1] ** 2
             dome_profile = np.clip(1.0 - radius_sq, 0.0, 1.0)
             base_height = float(np.max(surface_coords[:, 2]))
-            crown_height = 0.0005
+            crown_height = 0.0025
             return base_height + crown_height * dome_profile
 
         def _project_points_to_elastomer_surface(
