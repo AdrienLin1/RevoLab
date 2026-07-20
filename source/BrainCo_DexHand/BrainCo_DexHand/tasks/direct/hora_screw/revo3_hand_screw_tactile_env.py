@@ -9,7 +9,10 @@ Extends Revo3HandScrewEnv with the tactile-revo3 TacSL force-field arrays:
 five 16x16 taxel grids (normal + 2D shear per taxel) on the fingertip
 elastomers. The pooled arrays are written into the tail of ``priv_info`` — the
 HORA Stage-1 teacher observation. The actor observation (141 dims) and all
-rewards/terminations/randomizations of the base task are unchanged.
+terminations/randomizations of the base task are unchanged. Rewards are
+unchanged unless ``multi_contact_reward_scale`` is nonzero (valve tasks), which
+adds a bounded multi-finger coordination bonus computed from the tactile
+arrays (see ``_compute_multi_contact_reward``).
 
 The TacSL force field computes per-taxel penetration against the rotating
 nut/handle via PhysX SDF queries, which requires that body's collision mesh to
@@ -41,6 +44,11 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
         self.student_tactile_hist_buf = torch.zeros(
             (self.num_envs, self.cfg.student_tactile_history_len, self.cfg.student_tactile_frame_dim),
             device=self.device, dtype=torch.float,
+        )
+        # per-finger contact duty cycle (EMA of the tanh contact indicator),
+        # updated once per control step in _get_rewards
+        self.contact_duty_ema = torch.zeros(
+            (self.num_envs, len(self.cfg.tactile_tip_body_names)), device=self.device
         )
 
     def _setup_scene(self):
@@ -183,6 +191,51 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
             env_ids = self.hand._ALL_INDICES
         super()._reset_idx(env_ids)
         self.student_tactile_hist_buf[env_ids] = 0.0
+        self.contact_duty_ema[env_ids] = 0.0
+
+    def _get_rewards(self) -> torch.Tensor:
+        total_reward = super()._get_rewards()
+        if self.cfg.multi_contact_reward_scale == 0.0:
+            return total_reward
+        total_reward = total_reward + self._compute_multi_contact_reward()
+        self.extras["total_reward"] = total_reward.mean()
+        return total_reward
+
+    def _compute_multi_contact_reward(self) -> torch.Tensor:
+        """Bounded bonus for multi-finger contact that produces valve rotation.
+
+        r_coord = scale * coordination * gate, where coordination ramps 0->1 as the
+        soft finger count (sum of per-finger EMA duty cycles) goes min->max fingers,
+        and gate ramps 0->1 with the valve angle traveled over the last rot_window
+        control steps. Both factors saturate: force magnitude and rotation speed
+        stay priced by torque_penalty and rotate_reward, this term only buys the
+        sustained >=3-finger drive posture.
+        """
+        pool_rows, pool_cols = self.cfg.tactile_array_pool
+        num_fingers = len(self.cfg.tactile_tip_body_names)
+        tactile = self._compute_tactile_array_features()
+        # per-finger blocks are channel-major: (3, pool_rows*pool_cols)
+        cell_force = tactile.view(self.num_envs, num_fingers, 3, pool_rows * pool_cols).norm(dim=2)
+        contact = torch.tanh(cell_force.max(dim=-1).values / self.cfg.multi_contact_tau)
+        lam = self.cfg.multi_contact_ema_lambda
+        self.contact_duty_ema[:] = lam * self.contact_duty_ema + (1.0 - lam) * contact
+
+        soft_count = self.contact_duty_ema.sum(dim=-1)
+        lo, hi = self.cfg.multi_contact_min_fingers, self.cfg.multi_contact_max_fingers
+        coordination = torch.clamp((soft_count - lo) / (hi - lo), 0.0, 1.0)
+
+        # nut_dof_pos_history is appended in compute_observations (after rewards),
+        # so index -rot_window holds the angle exactly rot_window control steps ago;
+        # resets refill the history, zeroing the gate for fresh episodes.
+        dtheta = self.nut_dof_pos - self.nut_dof_pos_history[:, -self.cfg.multi_contact_rot_window]
+        gate = torch.clamp(dtheta / self.cfg.multi_contact_rot_ref, 0.0, 1.0)
+
+        r_coord = self.cfg.multi_contact_reward_scale * coordination * gate
+        self.extras["tactile/soft_finger_count"] = soft_count.mean()
+        self.extras["tactile/coord_factor"] = coordination.mean()
+        self.extras["tactile/rot_gate"] = gate.mean()
+        self.extras["tactile/multi_contact_reward"] = r_coord.mean()
+        return r_coord
 
     def _compute_tactile_array_features(self) -> torch.Tensor:
         """Pooled per-finger (normal, shear_x, shear_y) taxel grids, scaled and clipped.

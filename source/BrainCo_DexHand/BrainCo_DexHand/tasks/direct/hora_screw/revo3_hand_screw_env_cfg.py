@@ -280,7 +280,10 @@ class Revo3HandVavleDriverEnvCfg(Revo3HandScrewEnvCfg):
         # evaluated over all fingers to encourage a whole-hand valve wrap.
         self.angvel_penalty_threshold = (7.5, 15.0, 30_000_000, 60_000_000)
         self.rotate_reward_scale = 2.5
-        self.pose_diff_penalty_scale = -0.1
+        # No init-pose anchoring: all five fingers drive the valve, so they are
+        # free to leave the reset grasp. extras["pose_diff_penalty"] still logs
+        # the raw (unscaled) deviation.
+        self.pose_diff_penalty_scale = 0.0
         self.torque_penalty_scale = -3.0
         self.work_penalty_scale = -0.01
         self.rotate_penalty_scale = -0.3

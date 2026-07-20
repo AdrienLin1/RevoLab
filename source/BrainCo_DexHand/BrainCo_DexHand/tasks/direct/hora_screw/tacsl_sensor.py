@@ -40,6 +40,26 @@ if _VisuoTactileSensor is not None:
     class Revo3VisuoTactileSensor(_VisuoTactileSensor):
         """TacSL sensor variant for Revo3 fingertip elastomer overlays."""
 
+        def _update_buffers_impl(self, env_ids):
+            """Update force-field buffers as one consistent environment batch.
+
+            Upstream TacSL accepts ``env_ids`` but its force-field path only
+            applies them to some tensors.  In particular, point velocities use
+            the selected body poses together with the all-environment
+            ``_tactile_pos_expanded`` buffer.  A partial refresh therefore
+            fails with a batch-size mismatch.
+
+            Partial refreshes occur naturally when tactile data is read for a
+            reward, a subset of environments is reset, and tactile data is read
+            again for the post-reset observation.  The force-field calculation
+            also performs full-batch SDF queries before applying ``env_ids``, so
+            promoting the request to a full refresh preserves the intended data
+            and does not add a new asymptotic cost.
+            """
+            if self.cfg.enable_force_field and len(env_ids) != self._num_envs:
+                env_ids = torch.arange(self._num_envs, device=self._device)
+            super()._update_buffers_impl(env_ids)
+
         def _find_tip_body_prim(self):
             """Find the rigid fingertip body that owns the elastomer visual geometry."""
 
@@ -312,7 +332,7 @@ if _VisuoTactileSensor is not None:
                 if len(grid_axis) > 1:
                     grid_steps.append(float(np.min(np.diff(np.sort(grid_axis)))))
             cell_radius = max(grid_steps, default=0.002) * 1.25
-            surface_clearance = 0.0005
+            surface_clearance = 0.0025
 
             projected_coords = flat_coords.copy()
             for point_idx, flat_coord in enumerate(flat_coords):

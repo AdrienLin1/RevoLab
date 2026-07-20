@@ -80,6 +80,28 @@ class Revo3HandScrewTactileMixinCfg:
     tactile_priv_offset = 0
     tactile_priv_dim = 0
 
+    # ---- multi-finger coordination reward (0 disables; valve tasks enable) ----
+    # r_coord = scale * sat(soft_finger_count - min, 0, max - min)/(max - min)
+    #                 * clip(delta_theta_window / rot_ref, 0, 1)
+    # Bounded posture bonus: pays only when >=3 fingers hold a sustained duty-cycle
+    # contact on the nut/valve AND the valve actually traveled over the window.
+    # Force magnitude and speed are deliberately saturated away — they stay priced
+    # by torque_penalty and rotate_reward respectively.
+    multi_contact_reward_scale = 0.0
+    # per-finger contact indicator = tanh(strength / tau); strength = max pooled-cell
+    # force norm in tactile_force_scale units (single-taxel touch pools to ~0.0125)
+    multi_contact_tau = 0.1
+    # EMA duty cycle: time constant ~1/(1-lambda) control steps (~0.33 s at 0.85)
+    multi_contact_ema_lambda = 0.85
+    # soft finger count band: 0 below min (2-finger pinch earns nothing),
+    # saturates at max (<5 keeps one finger free for gaiting)
+    multi_contact_min_fingers = 1.0
+    multi_contact_max_fingers = 3.0
+    # rotation gate: valve angle traveled over the last window control steps,
+    # normalized by rot_ref (0.5 rad / 10 steps = full gate at ~1 rad/s average)
+    multi_contact_rot_window = 10
+    multi_contact_rot_ref = 0.5
+
     # ---- Stage2 DAgger student observation (real-robot sensing only) ----
     # proprio frame = 21 joint_pos + 21 current joint targets (no contact forces)
     student_proprio_frame_dim = 42
@@ -142,6 +164,26 @@ class Revo3HandScrewTactileMixinCfg:
         if self.student_obs_dim != self.student_proprio_history_dim + self.student_tactile_encoder_output_dim:
             raise ValueError("student_obs_dim != proprio_history_dim + tactile_encoder_output_dim")
 
+        if self.multi_contact_reward_scale != 0.0:
+            if self.multi_contact_tau <= 0.0:
+                raise ValueError(f"multi_contact_tau ({self.multi_contact_tau}) must be positive")
+            if not 0.0 <= self.multi_contact_ema_lambda < 1.0:
+                raise ValueError(
+                    f"multi_contact_ema_lambda ({self.multi_contact_ema_lambda}) must be in [0, 1)"
+                )
+            if self.multi_contact_max_fingers <= self.multi_contact_min_fingers:
+                raise ValueError(
+                    f"multi_contact_max_fingers ({self.multi_contact_max_fingers}) must exceed "
+                    f"multi_contact_min_fingers ({self.multi_contact_min_fingers})"
+                )
+            if self.multi_contact_rot_ref <= 0.0:
+                raise ValueError(f"multi_contact_rot_ref ({self.multi_contact_rot_ref}) must be positive")
+            if not 1 <= self.multi_contact_rot_window <= self.nut_termination_history_len:
+                raise ValueError(
+                    f"multi_contact_rot_window ({self.multi_contact_rot_window}) must be in "
+                    f"[1, nut_termination_history_len={self.nut_termination_history_len}]"
+                )
+
         self.tactile_sensor = []
         for tip_body in self.tactile_tip_body_names:
             elastomer_path = f"/World/envs/env_.*/hand/{tip_body}/tactile_elastomer"
@@ -183,11 +225,12 @@ class Revo3HandScrewDriverTactileEnvCfg(Revo3HandScrewTactileMixinCfg, Revo3Hand
 class Revo3HandVavleDriverTactileEnvCfg(Revo3HandScrewTactileMixinCfg, Revo3HandVavleDriverEnvCfg):
     """Five-finger hexagonal valve task + TacSL fingertip arrays."""
 
-    pass
+    # posture bonus: worth up to ~0.6 rad/s of speed (scale / rotate_reward_scale)
+    multi_contact_reward_scale = 1.5
 
 
 @configclass
 class Revo3HandValveDriver40TactileEnvCfg(Revo3HandScrewTactileMixinCfg, Revo3HandValveDriver40EnvCfg):
-    """The unchanged tactile valve task with a 40 mm handle circumradius."""
+    """The tactile valve task with a 40 mm handle circumradius."""
 
-    pass
+    multi_contact_reward_scale = 1.5
