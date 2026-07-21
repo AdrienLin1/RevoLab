@@ -115,7 +115,7 @@ class Revo3HandScrewTactileMixinCfg:
     student_obs_dim = 366
     # contact threshold on |scaled pooled tactile| (tactile_force_scale units);
     # single-taxel penetration ~1e-3 m scales to 0.2, diluted 16x by 4x4 avg-pool
-    student_tactile_contact_threshold = 0.01
+    student_tactile_contact_threshold = 0.001
 
     def __post_init__(self):
         super().__post_init__()
