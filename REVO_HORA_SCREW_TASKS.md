@@ -1,7 +1,8 @@
 # RevoHoraNutBolt / RevoHoraScrewDriver 任务移植说明
 
-> 最后更新：2026-07-12。当前版本已包含可视化警告修复、4096 环境 GUI 显存溢出诊断，
-> 以及任意正整数 `num_envs` 的 PPO minibatch 自动适配。
+> 最后更新：2026-07-19。当前版本已包含可视化警告修复、4096 环境 GUI 显存溢出诊断、
+> 任意正整数 `num_envs` 的 PPO minibatch 自动适配，以及触觉任务的 Stage2 学生
+> DAgger（第十节）和触觉稀疏度实测（第七节）。
 
 本文档记录了将 DEXSCREW 项目（Isaac Gym）中的 `XHandHoraNutBolt` / `XHandHoraScrewDriver`
 两个任务移植到 REVOLAB（Isaac Lab）后新增的两个任务：
@@ -336,8 +337,10 @@ python scripts/hora/train.py --task screwdriver_tactile --num_envs 16384 --headl
    5 指共 240 维，乘 `tactile_force_scale=200` 后 clip ±5，写入 priv_info 尾部：
    `priv_info_dim = 11 + 240 = 251`（`Revo3HandScrewTactile.yaml`）。
    监控指标：`tactile/priv_abs_mean`、`tactile/priv_abs_max`。
-5. **Stage2 不变**：ProprioAdapt 的 adapt_tconv 仍以 47 维本体历史蒸馏教师的
-   extrin 嵌入，教师 env_mlp 输入变宽对学生结构无影响。
+5. **Stage2 已改为专用 DAgger**（2026-07-18，详见第十节）：触觉任务的
+   `--algo ProprioAdapt` 不再走 adapt_tconv 潜变量蒸馏，而是路由到
+   `TactileDAgger`，把教师蒸馏成一个"只用真实机器人可得传感"的 366 维学生策略。
+   教师网络与输入保持不变（strict 加载）。
 
 冒烟记录（2026-07-16，128 envs，4096 agent steps，均 exit 0）：
 
@@ -352,6 +355,19 @@ python scripts/hora/train.py --task screwdriver_tactile --num_envs 16384 --headl
 `revo3_hand_screw_tactile_env_cfg.py` 的 `tactile_force_scale` /
 `tactile_array_pool`，或增大 `normal_contact_stiffness`）；SDF 碰撞对
 finger-gaiting 动力学的影响（凸包→精确网格，接触更真实但求解更贵）。
+
+**触觉稀疏度实测（2026-07-19，`ep_9500` nutbolt_tactile 教师，100 envs × 550 步）**：
+定量确认了上述"信号过稀"的担忧，且根因是结构性的：
+
+- 240 维池化触觉通道的**非零占比仅 0.087%**，最大值 0.216（scaled，对应原始穿透 ~1.1 mm）；
+- 与之对照，DIP 连杆接触力（进教师 obs 的 5 维）非常活跃：拇指/食指/中指接触率
+  65%–84%、平均力 3–12 N。即手确实稳定抓握并旋转（该 ckpt 平均每回合拧 5.9 rad），
+  **但接触发生在远节 DIP 连杆的碰撞外壳上，而 TacSL 阵列所在的 `tip_Link` 是一个
+  无碰撞几何的 1 g 参考坐标系刚体**（`tip_joint` 固定挂在 DIP 末端外约 2–3 cm 处），
+  凝胶垫只是叠加在其上的采样面。screwdriver 同理。
+- 因此触觉信息量的上限由"tip 虚拟垫是否与螺母 SDF 几何重叠"决定，约 5% 时间步、
+  几乎只有中指偶发。若要让触觉真正有用，优先级高于调阈值的是：把 taxel 采样面
+  校准到 DIP 碰撞外壳的真实表面，或给 tip_Link 补真实碰撞体并引导指尖参与抓握。
 
 ---
 
@@ -470,3 +486,128 @@ rsl-rl 5.x 在 `learn()` 开头执行 `check_nan(obs)`，无法遍历未拼接�
   直接喂给策略网络，需扩展 runner 的 obs_groups 并恢复 "tactile" 组，属后续工作。
 - 长训验证事项：抬升成功率曲线、TacSL 力场对抓取稳定性的实际增益、512 envs
   下的吞吐量。
+
+---
+
+## 十、触觉任务 Stage2 学生策略（TactileDAgger，2026-07-18）
+
+`nutbolt_tactile` / `valvedriver_tactile` 的 Stage2 不再复用 HORA 原本的
+ProprioAdapt（adapt_tconv 潜变量蒸馏），而是走一个新的 DAgger 蒸馏器
+`TactileDAgger`，把 Stage1 教师蒸馏成一个**只使用真实机器人上可靠获得的传感**的
+学生策略。原有 nutbolt / screwdriver（无触觉）任务仍走原 ProprioAdapt，不受影响。
+
+### 启动方式（命令不变）
+
+```bash
+# Stage1 教师照旧（触觉进 priv_info，见第七节）
+python scripts/hora/train.py --task valvedriver_tactile --num_envs 16384 --headless
+
+# Stage2 学生 DAgger：--algo ProprioAdapt + 教师 .pth，脚本自动路由到 TactileDAgger
+python scripts/hora/train.py --task valvedriver_tactile --algo ProprioAdapt \
+    --num_envs 4096 --headless \
+    --checkpoint outputs/hora/revo3_right/<run>/stage1_nn/best.pth
+# 冒烟：--train_cfg Revo3HandScrewTactileSmoke --num_envs 64
+```
+
+输出到教师 checkpoint 所属实验目录的 `stage2_runs/<时间戳>/stage2_nn/`，
+保存为自包含的 `.ckpt`（含 student + teacher + 两个归一化器），
+resume/test 无需再提供 Stage1 `.pth`。
+
+### 学生 observation：366 维
+
+学生只能看到本体感知历史与离散化触觉历史，**不含**任何三维接触力或特权信息：
+
+```
+3 × (21 joint_pos + 21 current_target) = 3 × 42 = 126 维本体历史
+10 × 240 维二值触觉         = 2400 维原始时空历史 → tactile encoder → 240 维时空特征
+student_obs = cat([proprio_hist_flat(126), tactile_embedding(240)]) = 366 维
+```
+
+数据来源与维护：
+
+- `joint_pos` / `current_target`：直接取自基类已维护的滑窗
+  `obs_buf_lag_history[:, -3:, :42]`——每帧前 42 维恰好是关节位置+目标，
+  第 42:47 维的接触力被切片自然排除，所以学生本体历史天然不含指尖力；
+- **二值触觉**：对 240 维池化 TacSL 通道按
+  `|scaled tactile| > student_tactile_contact_threshold` 阈值化为严格 0/1，
+  写入 env 内新增的 `student_tactile_hist_buf [E,10,240]`（每步丢最旧、追加当前帧）；
+- reset：只重置发生 reset 的并行环境，用重置后第一帧填满整段 10 帧历史
+  （与 `obs_buf_lag_history` 同一约定），`_reset_idx` 中同步清零对应环境，不残留上个 episode。
+
+### tactile encoder：2400 → 240
+
+`models.py::TactileHistoryEncoder`（借鉴 `ProprioAdaptTConv` 结构）：
+
+```
+(E,10,240) --逐帧 Linear 240→256→256--> (E,10,256)
+           --转置--> (E,256,10)
+           --Conv1d(k4,s2) 10→4 --ReLU--> Conv1d(k4,s1) 4→1--> (E,256,1)
+           --Linear 256→240--> (E,240) tactile_embedding
+```
+
+- 卷积核 4/2 + 4/1 的感受野覆盖**全部 10 帧**（单测验证过：首帧或尾帧翻转都会改变输出，
+  不是只看最新帧、也不是简单截断/均值）；
+- 二值触觉**不做归一化**直接进 encoder，保持 0/1 语义；本体历史走独立的在线
+  `RunningMeanStd((3,42))`（沿用 HORA sa_mean_std 惯例）。
+
+### 教师与学生的严格区分
+
+- **教师**：冻结的 Stage1 `ActorCritic`，`load_state_dict(strict=True)` 加载教师
+  `.pth`，全参数 `requires_grad=False` + `eval()`，输入仍是原本的 141 维 obs
+  （**含真实接触力**）+ 251 维 priv_info（含 TacSL 触觉）。因此触觉任务 Stage2
+  **不再设** `enable_contact_in_obs=False`（`train.py` 已排除触觉任务）——教师标签
+  需要它训练时见过的完整观测，否则动作会 OOD；
+- **学生**：只消费 env 新增的 `student_proprio_hist` / `student_tactile_hist` 两个键
+  （与教师 buffer 独立 clone，不共用）；
+- **在线 DAgger**：每步 student 前向 → 教师 `act_inference` 生成动作标签（no_grad + clamp）
+  → `loss = MSE(student_mu, teacher_mu)` → 只更新学生 → **环境执行学生动作**
+  （教师在学生访问到的状态上标注）；
+- optimizer 只含学生参数（actor MLP + mu 头 + tactile encoder）；首个训练步有一次性断言：
+  校验各张量 shape（366=126+240、tactile (E,10,240)→(E,240)）、触觉严格 0/1、
+  encoder 参数在 optimizer 中且能拿到有限梯度、教师参数不在 optimizer 中且 requires_grad=False。
+
+### 二值化阈值 `student_tactile_contact_threshold`
+
+- 当前默认 `0.01`。**基于第七节的稀疏度实测，这个值偏严约一个数量级**：非零池化触觉值
+  中位数仅 ~8e-4，0.01 会滤掉几乎所有真实接触（学生二值触觉均值仅 2.6e-5，
+  encoder 输入近似全零）。TacSL 无穿透时返回精确 0，无需防噪声底，建议降到 ~1e-3
+  （激活率提升约 10 倍，仍全是真实穿透）。这是首要调参入口；
+- 但如第七节所述，真正的瓶颈是 tip 传感面与 DIP 接触外壳的结构性错位，仅调阈值无法根治。
+
+### 涉及文件
+
+新增：
+
+- `algo/hora/padapt/tactile_dagger.py`：`TactileDAgger` 训练器（教师冻结、在线 DAgger、
+  一次性断言、自包含 `.ckpt` 保存/续训/测试）。
+
+修改：
+
+- `algo/hora/models/models.py`：新增 `TactileHistoryEncoder` 与
+  `TactileStudentPolicy`（原 `ActorCritic` / `ProprioAdaptTConv` 未动）;
+- `tasks/direct/hora_screw/revo3_hand_screw_tactile_env_cfg.py`：新增
+  `student_proprio_frame_dim=42 / history_len=3 / history_dim=126`、
+  `student_tactile_frame_dim=240 / history_len=10 / raw_history_dim=2400 /
+  encoder_output_dim=240`、`student_obs_dim=366`、`student_tactile_contact_threshold`，
+  并在 `__post_init__` 做维度一致性校验；
+- `tasks/direct/hora_screw/revo3_hand_screw_tactile_env.py`：新增
+  `student_tactile_hist_buf`，`compute_observations` 里二值化+滚动触觉历史，
+  `_get_observations` 输出两个 student 键，`_reset_idx` 清理对应环境历史；
+- `scripts/hora/train.py`：触觉任务 + `--algo ProprioAdapt` 路由到 `TactileDAgger`；
+  触觉任务 Stage2 保持 `enable_contact_in_obs=True`（非触觉任务分支逐字不变）。
+
+### 冒烟与回归记录（2026-07-18，RTX 4080，headless，64 envs，均 exit 0）
+
+- `nutbolt_tactile` DAgger（真实教师 `run_nutbolt_tactile_20260717_004837/.../best.pth`）：
+  64/64 迭代（=64 次 optimizer 更新），一次性断言全过（teacher obs (64,141)/priv (64,251)、
+  proprio (64,3,42)→126、tactile (64,10,240)→embedding (64,240)、student obs (64,366)、
+  触觉 min/max 0/1、encoder 10 个张量在 optimizer 中且梯度有限），DAgger loss 0.86→0.35 有限；
+- `screwdriver_tactile` DAgger（用已有 smoke 教师 `smoke_screwdriver_tactile/.../best.pth`）：
+  同样全部断言通过、64 迭代、loss 有限（该教师仅 smoke 质量，只验证管线）；
+- 学生 `.ckpt` 往返：含 10 个 `tactile_encoder.*` 张量，strict 重载后前向正常；
+  stage2 resume 路径实测打印 `Resumed tactile DAgger`；
+- 回归：非触觉 `nutbolt --algo ProprioAdapt`（老 adapt_tconv 路径，warm-start 提示原样出现）
+  与 `nutbolt_tactile` Stage1 PPO 均 exit 0，其他任务不会切到 366 维观测或专用 encoder。
+
+待长训验证：学生蒸馏质量（reward 是否逼近教师）、在真实稀疏触觉下 encoder 是否学到有用表征、
+以及触觉分支在当前 tip/DIP 错位下能否提供本体感知之外的增量信息。
