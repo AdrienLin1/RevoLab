@@ -1,0 +1,193 @@
+#usda 1.0
+(
+    defaultPrim = "revo3_single"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "revo3_single" (
+    prepend references = @../revo3_right.usd@
+)
+{
+    def Scope "Looks"
+    {
+        def Material "TactileGel"
+        {
+            token outputs:surface.connect = </revo3_single/Looks/TactileGel/PreviewSurface.outputs:surface>
+
+            def Shader "PreviewSurface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.92, 0.96, 1)
+                float inputs:opacity = 0.65
+                float inputs:roughness = 0.45
+                token outputs:surface
+            }
+        }
+    }
+
+    over "right_little_tip_Link"
+    {
+        def Xform "tactile_elastomer"
+        {
+            double3 xformOp:translate = (-0.000198486, -0.000319323, 0.005010851)
+            quatf xformOp:orient = (0.504021736, 0.466226891, 0.460031522, 0.562996958)
+            double3 xformOp:scale = (1, 1, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Mesh "gel_surface"
+            {
+                int[] faceVertexCounts = [3, 3]
+                int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+                normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)]
+                point3f[] points = [(-0.012, -0.010, 0), (0.012, -0.010, 0), (0.012, 0.010, 0), (-0.012, 0.010, 0)]
+                uniform token subdivisionScheme = "none"
+                rel material:binding = </revo3_single/Looks/TactileGel>
+            }
+
+            def Xform "tactile_sensor"
+            {
+            }
+
+            def Camera "cam"
+            {
+                double3 xformOp:translate = (0, 0, 0.030)
+                quatf xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+
+    over "right_ring_tip_Link"
+    {
+        def Xform "tactile_elastomer"
+        {
+            double3 xformOp:translate = (-0.000214466, -0.00010665, 0.005019226)
+            quatf xformOp:orient = (0.524455502, 0.464107684, 0.462040179, 0.544122556)
+            double3 xformOp:scale = (1, 1, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Mesh "gel_surface"
+            {
+                int[] faceVertexCounts = [3, 3]
+                int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+                normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)]
+                point3f[] points = [(-0.012, -0.010, 0), (0.012, -0.010, 0), (0.012, 0.010, 0), (-0.012, 0.010, 0)]
+                uniform token subdivisionScheme = "none"
+                rel material:binding = </revo3_single/Looks/TactileGel>
+            }
+
+            def Xform "tactile_sensor"
+            {
+            }
+
+            def Camera "cam"
+            {
+                double3 xformOp:translate = (0, 0, 0.030)
+                quatf xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+
+    over "right_middle_tip_Link"
+    {
+        def Xform "tactile_elastomer"
+        {
+            double3 xformOp:translate = (-0.00021445, 0.000106744, 0.005019225)
+            quatf xformOp:orient = (0.544126115, 0.462035963, 0.464113464, 0.52445041)
+            double3 xformOp:scale = (1, 1, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Mesh "gel_surface"
+            {
+                int[] faceVertexCounts = [3, 3]
+                int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+                normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)]
+                point3f[] points = [(-0.012, -0.010, 0), (0.012, -0.010, 0), (0.012, 0.010, 0), (-0.012, 0.010, 0)]
+                uniform token subdivisionScheme = "none"
+                rel material:binding = </revo3_single/Looks/TactileGel>
+            }
+
+            def Xform "tactile_sensor"
+            {
+            }
+
+            def Camera "cam"
+            {
+                double3 xformOp:translate = (0, 0, 0.030)
+                quatf xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+
+    over "right_index_tip_Link"
+    {
+        def Xform "tactile_elastomer"
+        {
+            double3 xformOp:translate = (-0.000198485, 0.00031942, 0.005010846)
+            quatf xformOp:orient = (0.563001691, 0.460026347, 0.466231554, 0.504016859)
+            double3 xformOp:scale = (1, 1, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Mesh "gel_surface"
+            {
+                int[] faceVertexCounts = [3, 3]
+                int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+                normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)]
+                point3f[] points = [(-0.012, -0.010, 0), (0.012, -0.010, 0), (0.012, 0.010, 0), (-0.012, 0.010, 0)]
+                uniform token subdivisionScheme = "none"
+                rel material:binding = </revo3_single/Looks/TactileGel>
+            }
+
+            def Xform "tactile_sensor"
+            {
+            }
+
+            def Camera "cam"
+            {
+                double3 xformOp:translate = (0, 0, 0.030)
+                quatf xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+
+    over "right_thumb_tip_Link"
+    {
+        def Xform "tactile_elastomer"
+        {
+            double3 xformOp:translate = (-0.00018, 0.006019946, 0.000101265)
+            quatf xformOp:orient = (0.999450238, -0.033154515, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+            def Mesh "gel_surface"
+            {
+                int[] faceVertexCounts = [3, 3]
+                int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+                normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)]
+                point3f[] points = [(-0.012, -0.010, 0), (0.012, -0.010, 0), (0.012, 0.010, 0), (-0.012, 0.010, 0)]
+                uniform token subdivisionScheme = "none"
+                rel material:binding = </revo3_single/Looks/TactileGel>
+            }
+
+            def Xform "tactile_sensor"
+            {
+            }
+
+            def Camera "cam"
+            {
+                double3 xformOp:translate = (0, 0, 0.030)
+                quatf xformOp:orient = (1, 0, 0, 0)
+                double3 xformOp:scale = (1, 1, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+        }
+    }
+}

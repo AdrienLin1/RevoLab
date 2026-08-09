@@ -1,0 +1,25 @@
+# Defaults for calibrated SDK values. Override individual sensors after calibration.
+# Values are in diagram sensor-ID order after the SDK-channel mapping is applied.
+layout_version: revo3_right_official_diagram_estimate_v5
+touch_data_type: 1
+fingers:
+  thumb:
+    module_id: 1
+    threshold_on_by_official_sensor_id: [150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150]
+    threshold_off_by_official_sensor_id: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  index:
+    module_id: 3
+    threshold_on_by_official_sensor_id: [150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150]
+    threshold_off_by_official_sensor_id: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  middle:
+    module_id: 5
+    threshold_on_by_official_sensor_id: [150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150]
+    threshold_off_by_official_sensor_id: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  ring:
+    module_id: 7
+    threshold_on_by_official_sensor_id: [150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150]
+    threshold_off_by_official_sensor_id: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  little:
+    module_id: 9
+    threshold_on_by_official_sensor_id: [150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150]
+    threshold_off_by_official_sensor_id: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]

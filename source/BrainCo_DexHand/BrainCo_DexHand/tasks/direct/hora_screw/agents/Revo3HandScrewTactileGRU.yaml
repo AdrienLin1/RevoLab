@@ -1,0 +1,59 @@
+# Stage1 teacher: flat priv_mlp (default).
+# Stage2 DAgger: student tactile encoder uses GRU over 10 x 240 binary history.
+# Usage:
+#   python scripts/hora/train.py --task nutbolt_tactile --train_cfg Revo3HandScrewTactileGRU ...
+#   python scripts/hora/train.py --task nutbolt_tactile --algo ProprioAdapt \
+#     --train_cfg Revo3HandScrewTactileGRU --checkpoint .../stage1_nn/best.pth
+
+algo: PPO
+tactile_layout: estimated_official
+network:
+  mlp:
+    units: [512, 256, 128]
+  priv_mlp:
+    units: [256, 128, 32]
+  tactile_encoder:
+    type: mlp
+  student_tactile_encoder:
+    type: gru
+    gated_fusion: true
+    gru:
+      hidden_dim: 256
+      num_layers: 1
+      bidirectional: true
+      dropout: 0.0
+      pool: last   # last | mean
+
+load_path: ''
+
+ppo:
+  output_name: 'debug'
+  normalize_input: True
+  normalize_value: True
+  value_bootstrap: True
+  num_actors: 16384
+  normalize_advantage: True
+  # Coordination is an intrinsic environment bonus in the standard PPO return.
+  separate_coord_advantage: False
+  reward_scale: 1.0
+  gamma: 0.99
+  tau: 0.95
+  learning_rate: 5e-3
+  kl_threshold: 0.02
+  horizon_length: 8
+  minibatch_size: 32768
+  mini_epochs: 5
+  clip_value: True
+  critic_coef: 4
+  entropy_coef: 0.0
+  e_clip: 0.2
+  bounds_loss_coef: 0.0001
+  truncate_grads: True
+  grad_norm: 1.0
+  save_best_after: 0
+  save_frequency: 500
+  max_agent_steps: 100000000
+  priv_info: True
+  priv_info_dim: 331
+  priv_info_embed_dim: 32
+  proprio_adapt: False

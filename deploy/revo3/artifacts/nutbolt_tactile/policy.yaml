@@ -1,0 +1,471 @@
+export:
+  stage: tactile_student
+  source_checkpoint: /home/bingchenzhou/RevoLab/outputs/hora/revo3_right/run_nutbolt_tactile_20260801_195819/stage2_runs/20260802_124312/stage2_nn/model_best.ckpt
+  source_config: /home/bingchenzhou/RevoLab/outputs/hora/revo3_right/run_nutbolt_tactile_20260801_195819/stage2_runs/20260802_124312/config_080215.yaml
+  task: nutbolt_tactile
+  requested_task: nutbolt_tactile
+task_contract:
+  canonical_name: nutbolt_tactile
+  observation_fingers:
+  - thumb
+  - index
+  - middle
+  action_fingers:
+  - thumb
+  - index
+  - middle
+  touch_module_ids:
+  - 1
+  - 3
+  - 5
+  policy_rate_hz: 20.0
+  total_nodes: 73
+  tactile_frame_dim: 377
+  all_five_observation_compatibility: false
+observation_contract:
+  schema: hora_tactile_student_physical_graph_v1
+  student_proprio:
+    history_len: 3
+    frame_dim: 42
+    frame_channels:
+      joint_position_normalized: 21
+      current_target_rad: 21
+      raw_force: 0
+    contains_raw_3d_force: false
+  student_tactile:
+    history_len: 10
+    frame_dim: 377
+    representation: derived_public_contact_graph
+    contains_raw_3d_force: false
+artifacts:
+  onnx: policy.onnx
+  onnx_sha256: 2fc5d2db2a5536cfaec2ef04d6531978da7ce3ef7f1506cfd72b15be912e0a69
+io_contract:
+  inputs:
+  - name: student_proprio_hist
+    shape:
+    - B
+    - 3
+    - 42
+    dtype: float32
+  - name: student_tactile_hist
+    shape:
+    - B
+    - 10
+    - 377
+    dtype: float32
+  outputs:
+  - name: action
+    shape:
+    - B
+    - 21
+    dtype: float32
+  action_semantics: delta
+  action_formula: cur_targets = prev_targets + action_scale * clipped_action, apply
+    action_mask_right_hand, then clamp to joint limits
+  action_clip:
+  - -1.0
+  - 1.0
+  action_scale: 0.041666666666666664
+  action_mask_right_hand:
+  - 1.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 1.0
+  - 1.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 1.0
+  - 1.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 1.0
+  - 1.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 1.0
+  - 1.0
+  policy_rate_hz: 20.0
+  joint_order_right_hand:
+  - right_index_MPR_joint
+  - right_little_MPR_joint
+  - right_middle_MPR_joint
+  - right_ring_MPR_joint
+  - right_thumb_CMP_joint
+  - right_index_MCP_joint
+  - right_little_MCP_joint
+  - right_middle_MCP_joint
+  - right_ring_MCP_joint
+  - right_thumb_CMR_joint
+  - right_index_PIP_joint
+  - right_little_PIP_joint
+  - right_middle_PIP_joint
+  - right_ring_PIP_joint
+  - right_thumb_MCP_joint
+  - right_index_DIP_joint
+  - right_little_DIP_joint
+  - right_middle_DIP_joint
+  - right_ring_DIP_joint
+  - right_thumb_PIP_joint
+  - right_thumb_DIP_joint
+  dynamic_batch: true
+normalization:
+  baked_in_onnx: true
+  proprio_source: checkpoint.proprio_mean_std
+  tactile: structural channels are not normalized during training
+verification:
+  performed: true
+  reference: pytorch_eval_cpu
+  runtime: onnxruntime_cpu
+  seed: 20260802
+  batch_size: 2
+  atol: 0.0001
+  max_abs_error: 1.2516975402832031e-06
+tactile:
+  layout: estimated_official
+  layout_version: revo3_right_official_diagram_estimate_v5
+  layout_source: /home/bingchenzhou/RevoLab/source/BrainCo_DexHand/BrainCo_DexHand/tasks/tactile_layouts/revo3_right_official_diagram_estimate_v5.json
+  sensor_value_order: SDK arrays are reordered by sdk_channel_ids_by_official_sensor_id
+    before graph feature construction
+  sensor_mapping:
+    verified: false
+    source: identity_assumption_not_hardware_verified
+    mapping_semantics: list index = official_sensor_id - 1; value = 1-based SDK channel
+      ID
+  node_channels:
+  - contact
+  - established
+  - released
+  - duration
+  - eta
+  finger_context_channels:
+  - shift_x
+  - shift_y
+  - shift_valid
+  - contact_ratio
+  proprio_history_len: 3
+  history_len: 10
+  frame_dim: 377
+  total_nodes: 73
+  duration_tau: 20.0
+  duration_max: 100.0
+  shift_ema_beta: 0.7
+  shift_max: 0.2
+  fingers:
+  - name: thumb
+    module_id: 1
+    module_name: thumb_tip
+    sensor_count: 31
+    official_sensor_ids:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
+    - 28
+    - 29
+    - 30
+    - 31
+    sensor_positions_xy:
+    - - 0.011128
+      - 0.004163
+    - - 0.011526
+      - 0.001244
+    - - 0.011823
+      - -0.00179
+    - - 0.011571
+      - -0.004723
+    - - 0.007351999999999999
+      - 0.005666
+    - - 0.007783999999999999
+      - 0.001791
+    - - 0.007767
+      - -0.002007
+    - - 0.007724999999999999
+      - -0.005805
+    - - 0.0041849999999999995
+      - -0.007965
+    - - 0.004199
+      - 0.005551
+    - - 0.004148000000000001
+      - 0.002709
+    - - 0.0041259999999999995
+      - 2.9e-05
+    - - 0.004177999999999999
+      - -0.002675
+    - - 0.004030000000000001
+      - -0.005422
+    - - 0.00048300000000000003
+      - -0.007978
+    - - 0.00020000000000000004
+      - 0.005729
+    - - 0.000201
+      - 0.002979
+    - - 0.000276
+      - 0.000135
+    - - 0.00032700000000000003
+      - -0.002662
+    - - 0.000325
+      - -0.005575
+    - - -0.002549
+      - -0.008281
+    - - -0.0038
+      - 0.005837
+    - - -0.003379
+      - 0.002755
+    - - -0.003284
+      - -0.000346
+    - - -0.003538
+      - -0.003395
+    - - -0.003939
+      - -0.006232
+    - - -0.006
+      - -0.008228
+    - - 0.0042179999999999995
+      - 0.008068
+    - - 0.001245
+      - 0.008253
+    - - -0.002003
+      - 0.008443
+    - - -0.005256
+      - 0.0084
+    sdk_channel_ids_by_official_sensor_id:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
+    - 28
+    - 29
+    - 30
+    - 31
+  - name: index
+    module_id: 3
+    module_name: index_tip
+    sensor_count: 21
+    official_sensor_ids:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+    sensor_positions_xy:
+    - - 0.008764
+      - -0.002372
+    - - 0.009731
+      - 0.000367
+    - - 0.009422
+      - 0.003425
+    - - 0.006069
+      - -0.002457
+    - - 0.006853
+      - 0.000463
+    - - 0.006866
+      - 0.00355
+    - - 0.00341
+      - -0.002651
+    - - 0.003996
+      - 0.000531
+    - - 0.00411
+      - 0.003577
+    - - 0.005625
+      - 0.005924
+    - - 0.000834
+      - -0.002651
+    - - 0.001251
+      - 0.000633
+    - - 0.001564
+      - 0.003598
+    - - 0.001873
+      - 0.006203
+    - - -0.001675
+      - -0.002739
+    - - -0.001432
+      - 0.000623
+    - - -0.001286
+      - 0.003536
+    - - -0.001653
+      - 0.006397
+    - - 0.004629
+      - -0.004996
+    - - 0.001337
+      - -0.005326
+    - - -0.002022
+      - -0.005415
+    sdk_channel_ids_by_official_sensor_id:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+  - name: middle
+    module_id: 5
+    module_name: middle_tip
+    sensor_count: 21
+    official_sensor_ids:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+    sensor_positions_xy:
+    - - 0.009025
+      - -0.002939
+    - - 0.01011
+      - 0.000466
+    - - 0.009188
+      - 0.004018
+    - - 0.006187
+      - -0.003123
+    - - 0.006689
+      - 0.000304
+    - - 0.006315
+      - 0.003898
+    - - 0.003249
+      - -0.003012
+    - - 0.003691
+      - 0.000419
+    - - 0.003642
+      - 0.003763
+    - - 0.00481
+      - 0.006337
+    - - 0.000508
+      - -0.002977
+    - - 0.000976
+      - 0.000555
+    - - 0.000867
+      - 0.003903
+    - - 0.001326
+      - 0.006715
+    - - -0.00216
+      - -0.00303
+    - - -0.001897
+      - 0.000723
+    - - -0.00184
+      - 0.003853
+    - - -0.002605
+      - 0.006774
+    - - 0.004408
+      - -0.005777
+    - - 0.000884
+      - -0.005974
+    - - -0.002396
+      - -0.006126
+    sdk_channel_ids_by_official_sensor_id:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21

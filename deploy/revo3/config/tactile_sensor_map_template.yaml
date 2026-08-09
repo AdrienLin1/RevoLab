@@ -1,0 +1,20 @@
+# Mapping from diagram sensor IDs to 1-based bc-stark-sdk array channels.
+# Identity values below are placeholders, not a verified hardware mapping.
+layout_version: revo3_right_official_diagram_estimate_v5
+verified: false
+fingers:
+  thumb:
+    module_id: 1
+    sdk_channel_ids_by_official_sensor_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+  index:
+    module_id: 3
+    sdk_channel_ids_by_official_sensor_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+  middle:
+    module_id: 5
+    sdk_channel_ids_by_official_sensor_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+  ring:
+    module_id: 7
+    sdk_channel_ids_by_official_sensor_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+  little:
+    module_id: 9
+    sdk_channel_ids_by_official_sensor_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
