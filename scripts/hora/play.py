@@ -15,6 +15,7 @@ Add --headless for a stats-only evaluation without the viewer.
 """
 
 import argparse
+import csv
 import os
 import sys
 import tempfile
@@ -47,6 +48,9 @@ parser.add_argument('--steps', type=int, default=0,
                     help='Number of control steps to run (0 = run until the window is closed).')
 parser.add_argument('--log_every', type=int, default=100,
                     help='Print rolling stats every N control steps.')
+parser.add_argument('--tactile_force_csv', type=str, default='',
+                    help='For tactile tasks, save every raw fingertip normal-force taxel '
+                         '(after tactile_force_scale, without pooling/clipping) to this CSV.')
 parser.add_argument('--seed', type=int, default=42)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -163,6 +167,51 @@ def _build_full_config(seed: int):
     })
 
 
+class _TactileNormalForceCsvWriter:
+    """Stream scaled, unpooled fingertip normal forces to a CSV file."""
+
+    def __init__(self, output_path: str, env, force_scale: float):
+        self.output_path = Path(output_path).expanduser().resolve()
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.output_path.open('w', newline='')
+        self._writer = csv.writer(self._file)
+        self._sensors = tuple(env._tactile_sensor)
+        self._force_scale = float(force_scale)
+
+        sensor_names = tuple(env.cfg.tactile_vis_sensor_names)
+        rows, cols = env.cfg.tactile_array_size
+        taxels_per_finger = int(rows) * int(cols)
+        if len(self._sensors) != len(sensor_names):
+            raise RuntimeError(
+                f'Tactile sensor/name count mismatch: {len(self._sensors)} sensors, '
+                f'{len(sensor_names)} names.'
+            )
+        self._writer.writerow(
+            ['step', 'env_id']
+            + [
+                f'{sensor_name}_normal_{taxel_idx:03d}'
+                for sensor_name in sensor_names
+                for taxel_idx in range(taxels_per_finger)
+            ]
+        )
+        self._file.flush()
+
+    def write_step(self, step: int):
+        scaled_normal_force = torch.cat(
+            [sensor.data.tactile_normal_force for sensor in self._sensors], dim=-1
+        ) * self._force_scale
+        force_rows = scaled_normal_force.detach().cpu().tolist()
+        self._writer.writerows(
+            [step, env_id, *force_values]
+            for env_id, force_values in enumerate(force_rows)
+        )
+
+    def close(self):
+        if not self._file.closed:
+            self._file.flush()
+            self._file.close()
+
+
 def main():
     set_np_formatting()
     seed = set_seed(args.seed)
@@ -202,6 +251,19 @@ def main():
     best_rot = 0.0
 
     obs_dict = env.reset()
+    tactile_force_writer = None
+    if args.tactile_force_csv:
+        if args.task not in _TACTILE_SCREW_TASKS:
+            raise ValueError('--tactile_force_csv requires a tactile screw/valve task.')
+        tactile_force_writer = _TactileNormalForceCsvWriter(
+            args.tactile_force_csv, env, env_cfg.tactile_force_scale
+        )
+        print(
+            f'[INFO] Recording scaled raw tactile normal forces to '
+            f'{tactile_force_writer.output_path} '
+            f'(scale={env_cfg.tactile_force_scale:g}, no pooling/clipping).',
+            flush=True,
+        )
     step = 0
     try:
         while args.steps <= 0 or step < args.steps:
@@ -216,6 +278,9 @@ def main():
             mu = agent.model.act_inference(input_dict)
             mu = torch.clamp(mu, -1.0, 1.0)
             obs_dict, rewards, dones, infos = env.step(mu)
+
+            if tactile_force_writer is not None:
+                tactile_force_writer.write_step(step + 1)
 
             ep_reward += rewards.to(device)
             ep_len += 1
@@ -245,6 +310,10 @@ def main():
                 print(line, flush=True)
     except KeyboardInterrupt:
         print('\n[INFO] Interrupted by user.', flush=True)
+    finally:
+        if tactile_force_writer is not None:
+            tactile_force_writer.close()
+            print(f'[INFO] Tactile force CSV saved: {tactile_force_writer.output_path}', flush=True)
 
     if done_count > 0:
         print(f'[SUMMARY] {done_count} episodes | mean reward {sum_reward / done_count:.2f} '

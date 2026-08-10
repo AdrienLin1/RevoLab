@@ -33,3 +33,5 @@ checkpoints/*
 !checkpoints/hora/
 !checkpoints/hora/revo3_right_ball_stage1_best.pth
 !checkpoints/hora/revo3_right_cylinder_stage1_best.pth
+real_force*.csv
+.~lock.*#
