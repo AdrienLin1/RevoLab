@@ -342,6 +342,11 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
                 -self.cfg.tactile_force_clip,
                 self.cfg.tactile_force_clip,
             )
+        # ``Fn`` originates from TacSL's non-negative compression magnitude.
+        # Preserve that physical invariant after optional vector noise as well.
+        teacher_force = teacher_force.view(self.num_envs, -1, 3)
+        teacher_force[..., 0].clamp_min_(0.0)
+        teacher_force = teacher_force.reshape_as(tactile)
         if self.cfg.tactile_layout == ESTIMATED_OFFICIAL_LAYOUT:
             teacher_frame, struct_frame = self._compute_graph_tactile_frames(
                 force_clean=tactile,
@@ -528,32 +533,19 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
             [contact_b, contact_established, contact_released, duration_norm, eta], dim=-1
         )
 
-        force_limit = max(float(self.cfg.tactile_force_clip), 1.0e-6)
-        normal_scale = float(self.cfg.tactile_graph_normal_log_scale)
-        tangential_scale = float(self.cfg.tactile_graph_tangential_log_scale)
-        normal_force = force_t[..., 0].clamp_min(0.0)
-        normalized_normal = torch.log1p(normal_force / normal_scale)
-        normalized_normal = (
-            normalized_normal / math.log1p(force_limit / normal_scale)
-        ).clamp(0.0, 1.0)
-        shear_force = force_t[..., 1:3]
-        normalized_shear = torch.sign(shear_force) * torch.log1p(
-            torch.abs(shear_force) / tangential_scale
-        )
-        normalized_shear = (
-            normalized_shear / math.log1p(force_limit / tangential_scale)
-        ).clamp(-1.0, 1.0)
-        normalized_force = torch.cat(
-            [normalized_normal.unsqueeze(-1), normalized_shear], dim=-1
-        )
+        # Keep the scaled/clipped three-dimensional TacSL force unchanged.  In
+        # particular, do not log-compress either the non-negative normal force
+        # or the signed shear components before exposing them to the teacher.
+        raw_force = force_t.clone()
+        raw_force[..., 0].clamp_min_(0.0)
         previous_force = self.prev_graph_force
-        delta_normal = (normalized_force[..., 0] - previous_force[..., 0]).clamp(-1.0, 1.0)
-        shear_magnitude = torch.linalg.vector_norm(normalized_force[..., 1:3], dim=-1)
+        delta_normal = (raw_force[..., 0] - previous_force[..., 0]).clamp(-1.0, 1.0)
+        shear_magnitude = torch.linalg.vector_norm(raw_force[..., 1:3], dim=-1)
         previous_shear_magnitude = torch.linalg.vector_norm(previous_force[..., 1:3], dim=-1)
         delta_shear_magnitude = (shear_magnitude - previous_shear_magnitude).clamp(-1.0, 1.0)
         force_nodes = torch.cat(
             [
-                normalized_force,
+                raw_force,
                 delta_normal.unsqueeze(-1),
                 delta_shear_magnitude.unsqueeze(-1),
             ],
@@ -561,7 +553,7 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
         )
 
         self.student_prev_contact_b.copy_(contact_b)
-        self.prev_graph_force.copy_(normalized_force)
+        self.prev_graph_force.copy_(raw_force)
         student_frame = torch.cat(
             [common_nodes.reshape(self.num_envs, -1), shift_context], dim=-1
         )

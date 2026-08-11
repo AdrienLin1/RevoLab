@@ -1,4 +1,5 @@
 import ast
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ TACTILE_ENV_PATH = (
     REPO_ROOT
     / "source/BrainCo_DexHand/BrainCo_DexHand/tasks/direct/hora_screw/revo3_hand_screw_tactile_env.py"
 )
+TACSL_SENSOR_PATH = TACTILE_ENV_PATH.with_name("tacsl_sensor.py")
 TACTILE_AGENT_DIR = TACTILE_ENV_PATH.parent / "agents"
 
 
@@ -92,9 +94,89 @@ def _load_method(path: Path, class_name: str, method_name: str):
             quaternion[..., :1] * cross + torch.cross(xyz, cross, dim=-1)
         )
 
-    namespace = {"torch": torch, "quat_apply": quat_apply}
+    namespace = {"math": math, "torch": torch, "quat_apply": quat_apply}
     exec(compile(module, str(path), "exec"), namespace)
     return namespace[method_name]
+
+
+def _load_function(path: Path, function_name: str):
+    """Load one top-level function without importing simulator dependencies."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    function_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    module = ast.fix_missing_locations(ast.Module(body=[function_node], type_ignores=[]))
+    namespace = {"torch": torch}
+    exec(compile(module, str(path), "exec"), namespace)
+    return namespace[function_name]
+
+
+def test_tacsl_normal_force_uses_nonnegative_compression_magnitude():
+    """Use ``fc_norm=k_n*depth`` instead of the signed tactile-Z projection."""
+    compute_fc_norm = _load_function(
+        TACSL_SENSOR_PATH,
+        "_fc_norm_from_penetration_depth",
+    )
+    depth = torch.tensor([[-0.2, 0.0, 0.1, 0.4]])
+
+    force = compute_fc_norm(depth, 2.5)
+
+    torch.testing.assert_close(force, torch.tensor([[0.0, 0.0, 0.25, 1.0]]))
+    assert torch.all(force >= 0.0)
+    source = TACSL_SENSOR_PATH.read_text(encoding="utf-8")
+    update_start = source.index("def _update_buffers_impl")
+    replace_call = source.index(
+        "self._replace_projected_normal_with_compression_magnitude()",
+        update_start,
+    )
+    aggregate_call = source.index("self._aggregate_estimated_patch_forces()", update_start)
+    assert replace_call < aggregate_call
+
+
+def test_graph_teacher_keeps_raw_three_dimensional_force_channels():
+    """Do not logarithmically encode teacher [Fn, Ft1, Ft2] graph channels."""
+    build_frames = _load_method(
+        TACTILE_ENV_PATH,
+        "Revo3HandScrewTactileEnv",
+        "_compute_graph_tactile_frames",
+    )
+    env = SimpleNamespace(
+        num_envs=1,
+        cfg=SimpleNamespace(
+            tactile_graph_total_nodes=1,
+            student_tactile_contact_threshold=0.1,
+            student_tactile_contact_off_threshold=0.05,
+            enable_visible_contact_noise=False,
+            student_tactile_flip_prob=0.0,
+            student_tactile_duration_tau=20.0,
+            student_tactile_duration_max=100.0,
+            tactile_shift_ema_beta=0.7,
+            tactile_shift_max=0.2,
+            tactile_graph_sensor_counts=(1,),
+            student_tactile_frame_dim=9,
+            teacher_tactile_frame_dim=14,
+        ),
+        student_hysteresis_contact_b=torch.zeros((1, 1)),
+        student_prev_contact_b=torch.zeros((1, 1)),
+        student_contact_duration=torch.zeros((1, 1)),
+        graph_prev_centroid=torch.zeros((1, 1, 2)),
+        graph_prev_contact_valid=torch.zeros((1, 1), dtype=torch.bool),
+        graph_shift_ema=torch.zeros((1, 1, 2)),
+        _graph_finger_positions=(torch.zeros((1, 2)),),
+        prev_graph_force=torch.zeros((1, 1, 3)),
+    )
+    force = torch.tensor([[2.0, -0.4, 0.3]])
+
+    teacher_frame, student_frame = build_frames(env, force, force)
+    teacher_node = teacher_frame[0, :10]
+
+    torch.testing.assert_close(teacher_node[5:8], force[0])
+    torch.testing.assert_close(teacher_node[8:], torch.tensor([1.0, 0.5]))
+    assert teacher_node[5] >= 0.0
+    assert teacher_frame.shape == (1, 14)
+    assert student_frame.shape == (1, 9)
 
 
 def test_screwdriver_keeps_physical_resistance_and_aligns_torque_penalty():

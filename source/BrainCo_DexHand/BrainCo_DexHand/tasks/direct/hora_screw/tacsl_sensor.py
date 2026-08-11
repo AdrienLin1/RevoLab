@@ -49,6 +49,15 @@ except ImportError:
     _VisuoTactileSensorCfg = None
 
 
+def _fc_norm_from_penetration_depth(
+    penetration_depth: torch.Tensor,
+    normal_contact_stiffness: float,
+) -> torch.Tensor:
+    """Return TacSL's non-negative normal compression force ``k_n * depth``."""
+
+    return penetration_depth.clamp_min(0.0) * float(normal_contact_stiffness)
+
+
 if _VisuoTactileSensorCfg is not None:
 
     @configclass
@@ -86,7 +95,30 @@ if _VisuoTactileSensor is not None:
             if self.cfg.enable_force_field and len(env_ids) != self._num_envs:
                 env_ids = torch.arange(self._num_envs, device=self._device)
             super()._update_buffers_impl(env_ids)
+            self._replace_projected_normal_with_compression_magnitude()
             self._aggregate_estimated_patch_forces()
+
+        def _replace_projected_normal_with_compression_magnitude(self) -> None:
+            """Expose TacSL's true non-negative ``fc_norm`` as normal force.
+
+            Upstream TacSL stores the tactile-frame Z projection of the complete
+            normal-plus-friction force in ``tactile_normal_force``.  That signed
+            projection is not the penalty-model normal magnitude.  The latter is
+            ``normal_contact_stiffness * penetration_depth`` and is non-negative
+            by construction, so use it for every Revo3 tactile layout before any
+            physical-patch aggregation or environment observation is built.
+            """
+
+            normal_force = self._data.tactile_normal_force
+            penetration_depth = self._data.penetration_depth
+            if normal_force is None or penetration_depth is None:
+                return
+            normal_force.copy_(
+                _fc_norm_from_penetration_depth(
+                    penetration_depth,
+                    self.cfg.normal_contact_stiffness,
+                )
+            )
 
         def _aggregate_estimated_patch_forces(self) -> None:
             """Integrate circular-patch samples and broadcast one result per fixed slot."""

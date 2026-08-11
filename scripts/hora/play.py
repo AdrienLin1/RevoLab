@@ -432,8 +432,6 @@ def main():
             spatial_dropout=float(args.tactile_spatial_dropout),
             noise_std=float(args.tactile_noise_std),
             binary_flip_prob=float(args.tactile_binary_flip_prob),
-            graph_normal_log_scale=float(env_cfg.tactile_graph_normal_log_scale),
-            graph_tangential_log_scale=float(env_cfg.tactile_graph_tangential_log_scale),
             graph_force_limit=float(env_cfg.tactile_force_clip),
             legacy_action_dim=int(env_cfg.action_space),
             legacy_frame_dim=int(env_cfg.observation_space // 3),

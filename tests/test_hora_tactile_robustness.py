@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-import math
 from pathlib import Path
 
 import torch
@@ -118,19 +117,8 @@ def test_graph_teacher_scaling_does_not_change_common_or_context_channels() -> N
     result = perturber({"tactile_hist": frame})["tactile_hist"]
 
     torch.testing.assert_close(result[0, 0, :5], common)
-    denominator = math.log1p(5.0 / 0.05)
-    raw_normal = 0.05 * torch.expm1(force[0] * denominator)
-    raw_shear = torch.sign(force[1:3]) * 0.05 * torch.expm1(
-        force[1:3].abs() * denominator
-    )
-    expected_normal = torch.log1p(0.5 * raw_normal / 0.05) / denominator
-    expected_shear = (
-        torch.sign(raw_shear)
-        * torch.log1p(0.5 * raw_shear.abs() / 0.05)
-        / denominator
-    )
-    torch.testing.assert_close(result[0, 0, 5], expected_normal)
-    torch.testing.assert_close(result[0, 0, 6:8], expected_shear)
+    torch.testing.assert_close(result[0, 0, 5], force[0] * 0.5)
+    torch.testing.assert_close(result[0, 0, 6:8], force[1:3] * 0.5)
     torch.testing.assert_close(result[0, 0, 8:10], force[3:5])
     torch.testing.assert_close(result[0, 0, 10:], context)
 

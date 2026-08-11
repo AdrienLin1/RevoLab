@@ -270,12 +270,6 @@ class Revo3HandScrewTactileMixinCfg:
     tactile_graph_common_channels = 5
     tactile_graph_force_channels = 5
     tactile_graph_context_channels = 4
-    # Log compression scales in the already tactile_force_scale-scaled units.
-    # The clipping range remains the statistical upper-bound proxy until a
-    # real/sim dataset is available for replacing it with measured P99 values.
-    tactile_graph_normal_log_scale = 0.05
-    tactile_graph_tangential_log_scale = 0.05
-
     # TacSL already provides per-taxel 3D force and world pose for recovering
     # object-axis torque. Keep PhysX detailed buffers disabled: Isaac Sim 5.0's
     # friction backend can fail even with one environment and corrupt the scene.
@@ -437,10 +431,6 @@ class Revo3HandScrewTactileMixinCfg:
             raise ValueError("tactile_shift_ema_beta must be in [0, 1)")
         if self.tactile_shift_max <= 0.0:
             raise ValueError("tactile_shift_max must be positive")
-        if self.tactile_graph_normal_log_scale <= 0.0:
-            raise ValueError("tactile_graph_normal_log_scale must be positive")
-        if self.tactile_graph_tangential_log_scale <= 0.0:
-            raise ValueError("tactile_graph_tangential_log_scale must be positive")
         if self.teacher_tactile_history_len != self.student_tactile_history_len:
             raise ValueError(
                 f"teacher_tactile_history_len ({self.teacher_tactile_history_len}) must equal "

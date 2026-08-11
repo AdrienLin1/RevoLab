@@ -8,7 +8,6 @@ run, matching a failed or mis-installed taxel rather than frame-wise noise.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 
 import torch
@@ -38,8 +37,6 @@ class TactileObservationPerturber:
         spatial_dropout: float = 0.0,
         noise_std: float = 0.0,
         binary_flip_prob: float = 0.0,
-        graph_normal_log_scale: float = 0.05,
-        graph_tangential_log_scale: float = 0.05,
         graph_force_limit: float = 5.0,
         legacy_action_dim: int = 21,
         legacy_frame_dim: int = 47,
@@ -62,9 +59,7 @@ class TactileObservationPerturber:
             spatial_dropout: Fraction of taxels permanently disabled per env.
             noise_std: Gaussian standard deviation in scaled TacSL force units.
             binary_flip_prob: Probability of flipping a student contact bit.
-            graph_normal_log_scale: Normal-force log compression scale.
-            graph_tangential_log_scale: Shear-force log compression scale.
-            graph_force_limit: Absolute force limit used by graph normalization.
+            graph_force_limit: Absolute force limit for graph force perturbations.
             legacy_action_dim: Number of hand actions/joints in the legacy obs.
             legacy_frame_dim: Width of one legacy actor-observation frame.
             active_finger_indices: Original five-finger indices represented by
@@ -92,8 +87,6 @@ class TactileObservationPerturber:
         self.spatial_dropout = float(spatial_dropout)
         self.noise_std = float(noise_std)
         self.binary_flip_prob = float(binary_flip_prob)
-        self.graph_normal_log_scale = float(graph_normal_log_scale)
-        self.graph_tangential_log_scale = float(graph_tangential_log_scale)
         self.graph_force_limit = float(graph_force_limit)
         self.tactile_priv_offset = int(tactile_priv_offset)
         self.tactile_priv_dim = int(tactile_priv_dim)
@@ -118,12 +111,8 @@ class TactileObservationPerturber:
             self.student_channels = 3
         if self.num_taxels <= 0:
             raise ValueError("tactile frame must contain at least one taxel/node")
-        if min(
-            self.graph_normal_log_scale,
-            self.graph_tangential_log_scale,
-            self.graph_force_limit,
-        ) <= 0.0:
-            raise ValueError("graph force normalization scales must be positive")
+        if self.graph_force_limit <= 0.0:
+            raise ValueError("graph force limit must be positive")
         if len(self.active_finger_indices) == 0:
             raise ValueError("active_finger_indices must not be empty")
         if layout == "regular_grid" and self.num_taxels % len(self.active_finger_indices) != 0:
@@ -314,7 +303,7 @@ class TactileObservationPerturber:
         previous: torch.Tensor,
         newest: torch.Tensor,
     ) -> torch.Tensor:
-        """Recompute newest graph force deltas from cached encoded forces.
+        """Recompute newest graph force deltas from cached raw forces.
 
         Args:
             previous: Cached prior teacher frame ``(E, 1, D)``.
@@ -412,7 +401,7 @@ class TactileObservationPerturber:
         return result
 
     def _perturb_graph_teacher_force(self, nodes: torch.Tensor) -> torch.Tensor:
-        """Apply force faults before restoring graph log-normalized channels.
+        """Apply force faults directly to raw graph force channels.
 
         Args:
             nodes: Graph teacher nodes with common and force channels.
@@ -422,33 +411,15 @@ class TactileObservationPerturber:
             physical force perturbation.
         """
         result = nodes.clone()
-        normal_scale = self.graph_normal_log_scale
-        tangential_scale = self.graph_tangential_log_scale
         force_limit = self.graph_force_limit
-        normal_denom = math.log1p(force_limit / normal_scale)
-        tangential_denom = math.log1p(force_limit / tangential_scale)
-
-        encoded_normal = result[..., 5].clamp(0.0, 1.0)
-        raw_normal = normal_scale * torch.expm1(encoded_normal * normal_denom)
-        encoded_shear = result[..., 6:8].clamp(-1.0, 1.0)
-        raw_shear = (
-            torch.sign(encoded_shear)
-            * tangential_scale
-            * torch.expm1(encoded_shear.abs() * tangential_denom)
-        )
-        raw_force = torch.cat([raw_normal.unsqueeze(-1), raw_shear], dim=-1)
-        raw_force = raw_force * self.force_scale
+        raw_force = result[..., 5:8] * self.force_scale
         if self.noise_std > 0.0:
             raw_force = raw_force + torch.randn_like(raw_force) * self.noise_std
         raw_normal = raw_force[..., 0].clamp(0.0, force_limit)
         raw_shear = raw_force[..., 1:3].clamp(-force_limit, force_limit)
 
-        result[..., 5] = torch.log1p(raw_normal / normal_scale) / normal_denom
-        result[..., 6:8] = (
-            torch.sign(raw_shear)
-            * torch.log1p(raw_shear.abs() / tangential_scale)
-            / tangential_denom
-        )
+        result[..., 5] = raw_normal
+        result[..., 6:8] = raw_shear
         if result.ndim >= 4:
             normal = result[..., 5]
             shear = torch.linalg.vector_norm(result[..., 6:8], dim=-1)
