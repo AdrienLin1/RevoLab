@@ -250,6 +250,11 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
         for sensor in self._tactile_sensor:
             data = sensor.data
             normal = data.tactile_normal_force              # (E, rows*cols)
+            # 下面是换成非负的法向力；
+            # normal = (
+            #     data.penetration_depth
+            #     * float(sensor.cfg.normal_contact_stiffness)
+            # )
             shear = data.tactile_shear_force                # (E, rows*cols, 2)
             taxels = torch.cat([normal.unsqueeze(-1), shear], dim=-1)
             taxels = taxels.view(self.num_envs, rows, cols, 3).permute(0, 3, 1, 2)
