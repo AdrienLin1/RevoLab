@@ -74,7 +74,6 @@ class Revo3HandTactileRotateEnv(Revo3HandHoraEnv):
 
         self.object_size_scale_ids = self.object_size_scale_ids.to(self.device)
         self.object_size_scales = self.object_size_scales.to(self.device)
-        self.priv_info_buf[:, 8] = self.object_size_scales
         self.delayed_targets = self.cur_targets.clone()
         self.action_delay = torch.zeros(
             self.num_envs,

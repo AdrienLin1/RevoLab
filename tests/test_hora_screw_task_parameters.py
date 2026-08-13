@@ -310,6 +310,7 @@ def test_tactile_reward_scales_prioritize_visible_contact_and_coordination():
         "Revo3HandScrewNutBoltTactileEnvCfg",
         "Revo3HandScrewDriverTactileEnvCfg",
         "Revo3HandVavleDriverTactileEnvCfg",
+        "Revo3HandValveDriver25TactileEnvCfg",
         "Revo3HandValveDriver40TactileEnvCfg",
     ):
         task = _literal_class_assignments(TACTILE_CFG_PATH, class_name)

@@ -28,6 +28,9 @@ _DRIVER_URDF = str(_REPO_ROOT / "assets" / "urdf" / "screw" / "driver" / "driver
 _VAVLE_DRIVER_URDF = str(
     _REPO_ROOT / "assets" / "urdf" / "screw" / "vavledriver" / "vavledriver_hex.urdf"
 )
+_VALVE_DRIVER_25_URDF = str(
+    _REPO_ROOT / "assets" / "urdf" / "screw" / "vavledriver" / "valvedriver_hex_25.urdf"
+)
 _VALVE_DRIVER_40_URDF = str(
     _REPO_ROOT / "assets" / "urdf" / "screw" / "vavledriver" / "valvedriver_hex_40.urdf"
 )
@@ -198,6 +201,9 @@ SCREW_TRINUT_CFG = _make_screw_cfg(_TRINUT_URDF, TRINUT_INIT_POS, "nut_joint")
 SCREW_DRIVER_CFG = _make_screw_cfg(_DRIVER_URDF, DRIVER_INIT_POS, "handle_to_shaft")
 SCREW_VAVLE_DRIVER_CFG = _make_screw_cfg(
     _VAVLE_DRIVER_URDF, VAVLE_DRIVER_INIT_POS, "valve_to_shaft"
+)
+SCREW_VALVE_DRIVER_25_CFG = _make_screw_cfg(
+    _VALVE_DRIVER_25_URDF, VAVLE_DRIVER_INIT_POS, "valve_to_shaft"
 )
 SCREW_VALVE_DRIVER_40_CFG = _make_screw_cfg(
     _VALVE_DRIVER_40_URDF, VAVLE_DRIVER_INIT_POS, "valve_to_shaft"

@@ -16,7 +16,7 @@
 
 - 观测：`obs` 141 维 + `priv_info`
 - 特权编码：`env_mlp(priv_info)` → 32 维 extrin，与 `obs` 拼接后进 actor MLP
-- screw/valve agent YAML 设 `tactile_layout: estimated_official`，由 TacSL 按真实物理节点采样
+- screw/valve 与 tactile-rotation agent YAML 均设 `tactile_layout: estimated_official`，由 TacSL 按真实物理节点采样
 - `priv_info_dim` 由 env 在运行时计算，`train.py` 会同步到 `ppo.priv_info_dim`
 
 ## Stage2：学生策略
@@ -36,8 +36,8 @@
 |---|---|---|---|
 | `Revo3HandScrewTactile.yaml` | estimated_official | mlp | conv1d |
 | `Revo3HandScrewTactileGRU.yaml` | estimated_official | mlp | gru |
-| `Revo3HandTactileRotate.yaml` | regular_grid | mlp | conv1d |
-| `Revo3HandTactileRotateGRU.yaml` | regular_grid | mlp | gru |
+| `Revo3HandTactileRotate.yaml` | estimated_official | mlp | conv1d |
+| `Revo3HandTactileRotateGRU.yaml` | estimated_official | mlp | gru |
 
 ## 兼容性
 

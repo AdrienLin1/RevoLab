@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Tactile task: rotate_ball_tactile, rotate_cylinder_tactile, "
             "nutbolt_tactile, screwdriver_tactile, valvedriver_tactile, "
-            "or valvedriver_tactile_40."
+            "valvedriver_tactile25, or valvedriver_tactile_40."
         ),
     )
     parser.add_argument("--onnx", required=True, help="Path to tactile student ONNX.")

@@ -39,6 +39,7 @@ from isaaclab.utils import configclass
 from .revo3_hand_screw_env_cfg import (
     Revo3HandScrewDriverEnvCfg,
     Revo3HandScrewNutBoltEnvCfg,
+    Revo3HandValveDriver25EnvCfg,
     Revo3HandValveDriver40EnvCfg,
     Revo3HandVavleDriverEnvCfg,
 )
@@ -46,6 +47,7 @@ from ...tactile_layout import (
     ESTIMATED_OFFICIAL_LAYOUT,
     REGULAR_GRID_LAYOUT,
     estimated_official_centers_xy,
+    normalized_estimated_official_centers_xy,
     resolve_tactile_layout_name,
 )
 
@@ -266,6 +268,7 @@ class Revo3HandScrewTactileMixinCfg:
     # Taxels per hand used when packing structural channels (5 fingers x 4x4).
     student_tactile_num_taxels = 80
     tactile_graph_sensor_counts = ()
+    tactile_graph_finger_positions = ()
     tactile_graph_total_nodes = 0
     tactile_graph_common_channels = 5
     tactile_graph_force_channels = 5
@@ -374,6 +377,22 @@ class Revo3HandScrewTactileMixinCfg:
                 int(len(estimated_official_centers_xy(finger_name)))
                 for finger_name in self.tactile_active_finger_names
             )
+            normalized_positions = tuple(
+                normalized_estimated_official_centers_xy(finger_name)
+                for finger_name in self.tactile_active_finger_names
+            )
+            position_counts = tuple(int(xy.shape[0]) for xy in normalized_positions)
+            if position_counts != self.tactile_graph_sensor_counts:
+                raise ValueError(
+                    "Normalized tactile-coordinate counts do not match physical sensor counts: "
+                    f"active_finger_names={self.tactile_active_finger_names}, "
+                    f"finger_counts={self.tactile_graph_sensor_counts}, "
+                    f"position_counts={position_counts}."
+                )
+            self.tactile_graph_finger_positions = tuple(
+                tuple((float(u), float(v)) for u, v in xy)
+                for xy in normalized_positions
+            )
             self.tactile_graph_total_nodes = int(sum(self.tactile_graph_sensor_counts))
             n_taxels = self.tactile_graph_total_nodes
             node_channels = int(self.tactile_graph_common_channels) + int(
@@ -388,6 +407,7 @@ class Revo3HandScrewTactileMixinCfg:
             )
         else:
             self.tactile_graph_sensor_counts = ()
+            self.tactile_graph_finger_positions = ()
             self.tactile_graph_total_nodes = 0
             n_taxels = len(self.tactile_tip_body_names) * pool_rows * pool_cols
             if int(self.teacher_tactile_channels) != 4:
@@ -728,3 +748,17 @@ class Revo3HandValveDriver40TactileEnvCfg(Revo3HandScrewTactileMixinCfg, Revo3Ha
     coord_alpha_g = 0.6
     coord_omega_ref = 1
     coord_obj_radius = 0.04  # 40 mm handle
+
+
+@configclass
+class Revo3HandValveDriver25TactileEnvCfg(Revo3HandScrewTactileMixinCfg, Revo3HandValveDriver25EnvCfg):
+    """The tactile valve task with a 25 mm handle circumradius."""
+
+    # Match the five-finger valve reward contract while using the smaller
+    # nominal lever arm in capacity and torque normalization.
+    tactile_visible_contact_finger_weights = (1.0, 1.0, 1.0, 1.0, 1.0)
+    multi_contact_reward_scale = 0.0
+    coord_alpha_h = 0.4
+    coord_alpha_g = 0.6
+    coord_omega_ref = 1.0
+    coord_obj_radius = 0.025

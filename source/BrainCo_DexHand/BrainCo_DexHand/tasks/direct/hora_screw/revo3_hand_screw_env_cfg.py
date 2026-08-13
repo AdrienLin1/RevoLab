@@ -17,6 +17,7 @@ from .assets import (
     REVO3_HAND_NUTBOLT_CFG,
     REVO3_HAND_VAVLE_DRIVER_CFG,
     SCREW_DRIVER_CFG,
+    SCREW_VALVE_DRIVER_25_CFG,
     SCREW_VALVE_DRIVER_40_CFG,
     SCREW_TRINUT_CFG,
     SCREW_VAVLE_DRIVER_CFG,
@@ -410,3 +411,13 @@ class Revo3HandValveDriver40EnvCfg(Revo3HandVavleDriverEnvCfg):
         super().__post_init__()
         # Everything else is inherited unchanged from the 35 mm valve task.
         self.object_cfg = SCREW_VALVE_DRIVER_40_CFG
+
+
+@configclass
+class Revo3HandValveDriver25EnvCfg(Revo3HandVavleDriverEnvCfg):
+    """The valve task with a 25 mm handle circumradius."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Everything else is inherited unchanged from the 35 mm valve task.
+        self.object_cfg = SCREW_VALVE_DRIVER_25_CFG

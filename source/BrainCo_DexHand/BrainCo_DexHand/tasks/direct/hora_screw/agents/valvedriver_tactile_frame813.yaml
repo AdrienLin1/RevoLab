@@ -1,0 +1,76 @@
+# Stage-1 structured tactile teacher selected explicitly with:
+#   --train_cfg valvedriver_tactile_frame813
+#
+# The environment-resolved ppo.priv_info_dim and finger metadata are synced by
+# scripts/hora/train.py and scripts/hora/play.py for each supported tactile task.
+
+algo: PPO
+tactile_layout: estimated_official
+
+network:
+  mlp:
+    units: [512, 256, 128]
+
+  # Retained for checkpoint-compatible legacy tactile_encoder.type=mlp configs.
+  # The finger_attention_gru teacher does not instantiate or use priv_mlp.
+  priv_mlp:
+    units: [256, 128, 32]
+
+  tactile_encoder:
+    type: finger_attention_gru
+    node_channels: [u, v, b, d, Fn, Ft1, Ft2]
+    node_input_dim: 7
+    node_source_channels: [0, 3, 5, 6, 7]
+    teacher_node_frame_channels: 10
+    finger_context_channels: 4
+    finger_token_dim: 32
+    finger_mlp_hidden_dim: 64
+    attention_heads: 4
+    attention_ff_dim: 64
+    gru_hidden_dim: 128
+    gru_num_layers: 1
+    gru_bidirectional: false
+    history_len: 10
+
+  # Stage-2 student behavior and checkpoint format remain unchanged.
+  student_tactile_encoder:
+    type: conv1d
+    gated_fusion: false
+    distill_dim: 32
+    output_dim: 128
+
+load_path: ''
+
+ppo:
+  output_name: 'debug'
+  normalize_input: True
+  normalize_value: True
+  value_bootstrap: True
+  num_actors: 16384
+  normalize_advantage: True
+  separate_coord_advantage: False
+  reward_scale: 1.0
+  gamma: 0.99
+  tau: 0.95
+  learning_rate: 1e-3
+  kl_threshold: 0.01
+  horizon_length: 8
+  minibatch_size: 4096
+  mini_epochs: 5
+  clip_value: True
+  critic_coef: 4
+  entropy_coef: 0.0
+  e_clip: 0.2
+  bounds_loss_coef: 0.0001
+  truncate_grads: True
+  grad_norm: 1.0
+  save_best_after: 0
+  save_frequency: 500
+  max_agent_steps: 1000000000
+  priv_info: True
+  # Five-finger valve placeholder (11 base + 1170 tactile). Runtime syncs this
+  # to 753/967/1181/1178 for the selected 3/4/5-finger task before saving.
+  priv_info_dim: 1181
+  priv_info_embed_dim: 32
+  proprio_adapt: False
+  tactile_distill_coef: 0.0

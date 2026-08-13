@@ -9,10 +9,11 @@
 | `nutbolt_tactile` | thumb/index/middle | 1/3/5 | 42 | 377 | 13 |
 | `screwdriver_tactile` | thumb/index/middle/ring | 1/3/5/7 | 42 | 486 | 17 |
 | `valvedriver_tactile` | 五指 | 1/3/5/7/9 | 42 | 595 | 21 |
+| `valvedriver_tactile25` | 五指 | 1/3/5/7/9 | 42 | 595 | 21 |
 | `valvedriver_tactile_40` | 五指 | 1/3/5/7/9 | 42 | 595 | 21 |
 
 历史拼写 `vavledriver_tactile` 以及仓库中对应 Gym ID 会被规范化到同一 canonical task。
-其中 `valvedriver_tactile_40` 的 `40` 是 40 mm 阀门尺寸，不是 40 Hz；六种任务当前均为
+其中 `valvedriver_tactile25` 和 `valvedriver_tactile_40` 的数字是阀门名义半径（mm），不是控制频率；七种任务当前均为
 20 Hz。
 
 现有可完整导出的实测 checkpoint 示例为：

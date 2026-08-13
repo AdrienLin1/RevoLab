@@ -46,9 +46,9 @@ parser.add_argument('--task', type=str, default='cylinder',
                     choices=['ball', 'cylinder',
                              'rotate_ball_tactile', 'rotate_cylinder_tactile',
                              'nutbolt', 'screwdriver',
-                             'valvedriver', 'valvedriver_40', 'vavledriver',
+                             'valvedriver', 'valvedriver_25', 'valvedriver_40', 'vavledriver',
                              'nutbolt_tactile', 'screwdriver_tactile',
-                             'valvedriver_tactile', 'valvedriver_tactile_40',
+                             'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
                              'vavledriver_tactile'])
 parser.add_argument('--algo', type=str, default='PPO', choices=['PPO', 'ProprioAdapt'])
 parser.add_argument('--train_cfg', type=str, default='',
@@ -91,14 +91,14 @@ if args.tactile_vis_show and not args.visualize_tactile:
 
 _TACTILE_SCREW_TASKS = (
     'nutbolt_tactile', 'screwdriver_tactile',
-    'valvedriver_tactile', 'valvedriver_tactile_40',
+    'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
     'vavledriver_tactile',  # backward-compatible alias for the original typo
 )
 _TACTILE_ROTATE_TASKS = ('rotate_ball_tactile', 'rotate_cylinder_tactile')
 _TACTILE_TASKS = _TACTILE_SCREW_TASKS + _TACTILE_ROTATE_TASKS
 _NON_TACTILE_SCREW_TASKS = (
     'nutbolt', 'screwdriver',
-    'valvedriver', 'valvedriver_40',
+    'valvedriver', 'valvedriver_25', 'valvedriver_40',
     'vavledriver',  # backward-compatible alias for the original typo
 )
 _SCREW_TASKS = _NON_TACTILE_SCREW_TASKS + _TACTILE_SCREW_TASKS
@@ -213,6 +213,7 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_env import Revo3Ha
 from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_env_cfg import (
     Revo3HandScrewDriverEnvCfg,
     Revo3HandScrewNutBoltEnvCfg,
+    Revo3HandValveDriver25EnvCfg,
     Revo3HandValveDriver40EnvCfg,
     Revo3HandVavleDriverEnvCfg,
 )
@@ -220,6 +221,7 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env import
 from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env_cfg import (
     Revo3HandScrewDriverTactileEnvCfg,
     Revo3HandScrewNutBoltTactileEnvCfg,
+    Revo3HandValveDriver25TactileEnvCfg,
     Revo3HandValveDriver40TactileEnvCfg,
     Revo3HandVavleDriverTactileEnvCfg,
 )
@@ -301,11 +303,13 @@ _SCREW_ENV_CFG = {
     'nutbolt': Revo3HandScrewNutBoltEnvCfg,
     'screwdriver': Revo3HandScrewDriverEnvCfg,
     'valvedriver': Revo3HandVavleDriverEnvCfg,
+    'valvedriver_25': Revo3HandValveDriver25EnvCfg,
     'valvedriver_40': Revo3HandValveDriver40EnvCfg,
     'vavledriver': Revo3HandVavleDriverEnvCfg,
     'nutbolt_tactile': Revo3HandScrewNutBoltTactileEnvCfg,
     'screwdriver_tactile': Revo3HandScrewDriverTactileEnvCfg,
     'valvedriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
+    'valvedriver_tactile25': Revo3HandValveDriver25TactileEnvCfg,
     'valvedriver_tactile_40': Revo3HandValveDriver40TactileEnvCfg,
     'vavledriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
 }
@@ -392,6 +396,7 @@ def _attach_env_runtime_to_config(full_config, env_cfg, task_name: str) -> None:
         'action_scale': float(env_cfg.action_scale),
         'action_dim': int(env_cfg.action_space),
         'observation_dim': int(env_cfg.observation_space),
+        'priv_info_dim': int(env_cfg.priv_info_dim),
         'student_tactile_duration_tau': float(
             getattr(env_cfg, 'student_tactile_duration_tau', 20.0)
         ),
@@ -429,6 +434,22 @@ def _attach_env_runtime_to_config(full_config, env_cfg, task_name: str) -> None:
             )
         runtime.update(
             {
+                'tactile_active_finger_names': list(observation_fingers),
+                'tactile_graph_sensor_counts': [
+                    int(value)
+                    for value in getattr(env_cfg, 'tactile_graph_sensor_counts', ())
+                ],
+                'tactile_graph_total_nodes': int(
+                    getattr(env_cfg, 'tactile_graph_total_nodes', 0)
+                ),
+                'tactile_priv_offset': int(env_cfg.tactile_priv_offset),
+                'tactile_priv_dim': int(env_cfg.tactile_priv_dim),
+                'teacher_tactile_history_len': int(
+                    env_cfg.teacher_tactile_history_len
+                ),
+                'teacher_tactile_frame_dim': int(
+                    env_cfg.teacher_tactile_frame_dim
+                ),
                 'tactile_observation_fingers': list(observation_fingers),
                 'action_fingers': list(action_fingers),
                 'student_proprio_history_len': int(
@@ -515,6 +536,7 @@ def _validate_stage1_teacher_for_tactile_stage2(checkpoint_path: str, full_confi
         errors.append(f"ppo.priv_info_dim mismatch: train_cfg={cfg_priv_dim}, env_cfg={env_priv_dim}")
 
     active_fingers = tuple(getattr(env_cfg, 'tactile_active_finger_names', ()))
+    env_num_fingers = len(active_fingers)
     ckpt_priv_dim = _checkpoint_env_mlp_input_dim(model_state)
     if ckpt_priv_dim is not None and ckpt_priv_dim != env_priv_dim:
         errors.append(

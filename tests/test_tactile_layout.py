@@ -39,6 +39,26 @@ def test_estimated_centers_are_complete_and_bounded(finger_name: str, expected_c
     assert np.max(np.abs(centers[:, 1])) <= 0.0085 + 1.0e-8
 
 
+@pytest.mark.parametrize(
+    ("finger_name", "expected_count"),
+    [("thumb", 31), ("index", 21), ("middle", 21), ("ring", 21), ("little", 21)],
+)
+def test_normalized_estimated_centers_are_centered_and_unit_diameter(
+    finger_name: str,
+    expected_count: int,
+):
+    centers = tactile_layout.normalized_estimated_official_centers_xy(finger_name)
+    pairwise_distance = np.linalg.norm(
+        centers[:, None, :] - centers[None, :, :],
+        axis=-1,
+    )
+
+    assert centers.shape == (expected_count, 2)
+    assert centers.dtype == np.float32
+    np.testing.assert_allclose(centers.mean(axis=0), 0.0, atol=1.0e-7)
+    assert pairwise_distance.max() == pytest.approx(1.0, abs=1.0e-6)
+
+
 @pytest.mark.parametrize("finger_name", ["little", "ring", "middle", "index", "thumb"])
 def test_estimated_layout_preserves_fixed_tacsl_tensor_shape(finger_name: str):
     snapped = tactile_layout.rasterize_estimated_official_layout(

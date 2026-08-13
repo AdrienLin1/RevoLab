@@ -88,6 +88,7 @@ class PPO(object):
             self.obs_shape,
             self.obs_shape[0] // 3,
             self.proprio_adapt,
+            env_cfg=self.env.cfg,
         )
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
@@ -590,6 +591,11 @@ class PPO(object):
                 f"Strict Stage1 resume failed: missing keys {missing} in checkpoint: {fn}"
             )
 
+        validate_teacher_tactile_checkpoint_compatibility(
+            checkpoint['model'],
+            self.model.state_dict(),
+            checkpoint_path=str(fn),
+        )
         self.model.load_state_dict(checkpoint['model'], strict=True)
         self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
         self.value_mean_std.load_state_dict(checkpoint['value_mean_std'])
@@ -631,7 +637,7 @@ class PPO(object):
             self.model.state_dict(),
             checkpoint_path=str(fn),
         )
-        self.model.load_state_dict(checkpoint['model'])
+        self.model.load_state_dict(checkpoint['model'], strict=True)
         if self.normalize_input:
             self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
 

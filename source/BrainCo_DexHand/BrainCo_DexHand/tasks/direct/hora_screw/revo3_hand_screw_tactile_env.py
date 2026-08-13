@@ -42,7 +42,10 @@ from pxr import Gf, PhysxSchema, Usd, UsdGeom, UsdPhysics, Vt
 
 from .revo3_hand_screw_env import _LOCAL_GROUND_USD, Revo3HandScrewEnv, apply_force_vector_noise
 from .revo3_hand_screw_tactile_env_cfg import Revo3HandScrewTactileMixinCfg
-from ...tactile_layout import ESTIMATED_OFFICIAL_LAYOUT, estimated_official_centers_xy
+from ...tactile_layout import (
+    ESTIMATED_OFFICIAL_LAYOUT,
+    normalized_estimated_official_centers_xy,
+)
 
 
 class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
@@ -166,13 +169,11 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
         positions = []
         for finger_name in self.cfg.tactile_active_finger_names:
             xy = torch.tensor(
-                estimated_official_centers_xy(finger_name),
+                normalized_estimated_official_centers_xy(finger_name),
                 device=self.device,
                 dtype=torch.float,
             )
-            xy = xy - xy.mean(dim=0, keepdim=True)
-            diameter = torch.cdist(xy, xy).max().clamp_min(1.0e-6)
-            positions.append(xy / diameter)
+            positions.append(xy)
         return tuple(positions)
 
     def _setup_scene(self):

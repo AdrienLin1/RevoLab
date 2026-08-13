@@ -49,9 +49,9 @@ parser.add_argument('--task', type=str, default='nutbolt',
                     choices=['ball', 'cylinder',
                              'rotate_ball_tactile', 'rotate_cylinder_tactile',
                              'nutbolt', 'screwdriver',
-                             'valvedriver', 'valvedriver_40', 'vavledriver',
+                             'valvedriver', 'valvedriver_25', 'valvedriver_40', 'vavledriver',
                              'nutbolt_tactile', 'screwdriver_tactile',
-                             'valvedriver_tactile', 'valvedriver_tactile_40',
+                             'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
                              'vavledriver_tactile'])
 parser.add_argument('--checkpoint', type=str, required=True,
                     help='Stage1 .pth from stage1_nn/ or Stage2 .ckpt from stage2_nn/.')
@@ -111,14 +111,14 @@ if not 0.0 <= args.tactile_binary_flip_prob <= 1.0:
 
 _TACTILE_SCREW_TASKS = (
     'nutbolt_tactile', 'screwdriver_tactile',
-    'valvedriver_tactile', 'valvedriver_tactile_40',
+    'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
     'vavledriver_tactile',  # backward-compatible alias for the original typo
 )
 _TACTILE_ROTATE_TASKS = ('rotate_ball_tactile', 'rotate_cylinder_tactile')
 _TACTILE_TASKS = _TACTILE_SCREW_TASKS + _TACTILE_ROTATE_TASKS
 _NON_TACTILE_SCREW_TASKS = (
     'nutbolt', 'screwdriver',
-    'valvedriver', 'valvedriver_40',
+    'valvedriver', 'valvedriver_25', 'valvedriver_40',
     'vavledriver',  # backward-compatible alias for the original typo
 )
 _SCREW_TASKS = _NON_TACTILE_SCREW_TASKS + _TACTILE_SCREW_TASKS
@@ -178,6 +178,7 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_env import Revo3Ha
 from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_env_cfg import (
     Revo3HandScrewDriverEnvCfg,
     Revo3HandScrewNutBoltEnvCfg,
+    Revo3HandValveDriver25EnvCfg,
     Revo3HandValveDriver40EnvCfg,
     Revo3HandVavleDriverEnvCfg,
 )
@@ -185,6 +186,7 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env import
 from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env_cfg import (
     Revo3HandScrewDriverTactileEnvCfg,
     Revo3HandScrewNutBoltTactileEnvCfg,
+    Revo3HandValveDriver25TactileEnvCfg,
     Revo3HandValveDriver40TactileEnvCfg,
     Revo3HandVavleDriverTactileEnvCfg,
 )
@@ -193,11 +195,13 @@ _SCREW_ENV_CFG = {
     'nutbolt': Revo3HandScrewNutBoltEnvCfg,
     'screwdriver': Revo3HandScrewDriverEnvCfg,
     'valvedriver': Revo3HandVavleDriverEnvCfg,
+    'valvedriver_25': Revo3HandValveDriver25EnvCfg,
     'valvedriver_40': Revo3HandValveDriver40EnvCfg,
     'vavledriver': Revo3HandVavleDriverEnvCfg,
     'nutbolt_tactile': Revo3HandScrewNutBoltTactileEnvCfg,
     'screwdriver_tactile': Revo3HandScrewDriverTactileEnvCfg,
     'valvedriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
+    'valvedriver_tactile25': Revo3HandValveDriver25TactileEnvCfg,
     'valvedriver_tactile_40': Revo3HandValveDriver40TactileEnvCfg,
     'vavledriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
 }

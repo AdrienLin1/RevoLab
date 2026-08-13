@@ -302,6 +302,21 @@ def estimated_official_centers_xy(finger_name: str) -> np.ndarray:
     )
 
 
+def normalized_estimated_official_centers_xy(finger_name: str) -> np.ndarray:
+    """Return centered physical-node coordinates normalized by finger diameter.
+
+    Each finger is normalized independently.  The physical sensor order is
+    unchanged, while the coordinate mean becomes zero and the maximum pairwise
+    distance becomes one (up to floating-point tolerance).
+    """
+
+    xy = estimated_official_centers_xy(finger_name)
+    xy = xy - xy.mean(axis=0, keepdims=True)
+    pairwise_delta = xy[:, None, :] - xy[None, :, :]
+    diameter = float(np.linalg.norm(pairwise_delta, axis=-1).max())
+    return (xy / max(diameter, 1.0e-6)).astype(np.float32, copy=False)
+
+
 def estimated_official_sensor_plane_xy(
     finger_name: str,
     finger_xy: np.ndarray,

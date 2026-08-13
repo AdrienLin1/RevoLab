@@ -48,6 +48,7 @@ class ProprioAdapt(object):
             self.obs_shape,
             self.obs_per_step,
             self.proprio_adapt,
+            env_cfg=self.env.cfg,
         )
         self.model = ActorCritic(net_config)
         self.model.to(self.device)

@@ -171,6 +171,15 @@ TACTILE_TASK_SPECS = (
         ),
     ),
     TactileTaskSpec(
+        canonical_name="valvedriver_tactile25",
+        default_observation_fingers=FINGER_ORDER,
+        action_fingers=FINGER_ORDER,
+        aliases=(
+            "BrainCo-Direct-Revo3-HoraValveDriverTactile25-v0",
+            "RevoHoraValveDriverTactile25-v0",
+        ),
+    ),
+    TactileTaskSpec(
         canonical_name="valvedriver_tactile_40",
         default_observation_fingers=FINGER_ORDER,
         action_fingers=FINGER_ORDER,

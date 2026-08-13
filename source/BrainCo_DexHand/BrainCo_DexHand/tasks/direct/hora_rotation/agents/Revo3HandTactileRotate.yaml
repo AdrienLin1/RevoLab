@@ -1,9 +1,10 @@
 # Stage1 teacher and Stage2 TactileDAgger config for tactile ball/cylinder
-# target-angular-velocity tracking. Task-resolved dimensions are synchronized
-# by scripts/hora/train.py and scripts/hora/play.py.
+# continuous rotation. Use the same five-finger 115-node physical tactile
+# observation layout as the tactile valve tasks. Task-resolved dimensions are
+# synchronized by scripts/hora/train.py and scripts/hora/play.py.
 
 algo: PPO
-tactile_layout: regular_grid
+tactile_layout: estimated_official
 network:
   mlp:
     units: [512, 256, 128]
@@ -43,9 +44,11 @@ ppo:
   grad_norm: 1.0
   save_best_after: 0
   save_frequency: 500
-  max_agent_steps: 300000000
+  max_agent_steps: 1000000000
   priv_info: True
-  priv_info_dim: 328
+  # Rotation base privilege (8) + five-finger physical tactile frame
+  # (115 nodes * 10 channels + 5 fingers * 4 context channels = 1170).
+  priv_info_dim: 1178
   priv_info_embed_dim: 32
   proprio_adapt: False
   tactile_distill_coef: 0.0

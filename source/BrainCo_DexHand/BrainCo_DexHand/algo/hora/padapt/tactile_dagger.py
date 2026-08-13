@@ -6,9 +6,9 @@ separate policy restricted to real-robot sensing:
   student obs = proprio history 3 x (21 joint_pos + 21 targets)
               + layout-aware tactile history (grid CNN or physical-node GNN)
 
-Teacher = frozen Stage1 ActorCritic (obs 141 incl. contacts + priv_info incl. TacSL
-force/state). The public release uses a flat MLP teacher over ``priv_info`` and
-distills only action means:
+Teacher = frozen Stage1 ActorCritic (obs 141 incl. contacts + task privilege and
+TacSL state). It may use the legacy flat ``priv_info`` MLP or the explicit
+finger-attention-GRU tactile-history encoder, and distills action means:
 
   L = MSE(student μ, clamp(teacher μ))
 
@@ -257,6 +257,7 @@ class TactileDAgger(object):
             self.obs_shape,
             self.obs_shape[0] // 3,
             proprio_adapt=False,
+            env_cfg=env_cfg,
         )
         self.teacher = ActorCritic(teacher_config)
         self.teacher.to(self.device)
@@ -522,10 +523,11 @@ class TactileDAgger(object):
 
     @torch.no_grad()
     def _initialize_student_encoder_from_teacher(self) -> None:
-        """No-op for MLP teacher checkpoints without a shared tactile encoder."""
+        """Keep the independently specified student tactile encoder unchanged."""
         if self.initialize_student_tactile_from_teacher:
             cprint(
-                '[INFO] Skipped tactile encoder warm start: MLP teacher has no tactile encoder.',
+                '[INFO] Skipped tactile encoder warm start: the Stage1 Teacher and '
+                'Stage2 Student use independent architectures.',
                 'yellow',
             )
 
@@ -1200,6 +1202,11 @@ class TactileDAgger(object):
             if missing:
                 raise RuntimeError(f'Stage2 resume failed: missing keys {missing} in checkpoint: {fn}')
             self.student.load_state_dict(checkpoint['student'], strict=False)
+            validate_teacher_tactile_checkpoint_compatibility(
+                checkpoint['teacher_model'],
+                self.teacher.state_dict(),
+                checkpoint_path=str(fn),
+            )
             self.teacher.load_state_dict(checkpoint['teacher_model'], strict=True)
             self.teacher_obs_rms.load_state_dict(checkpoint['teacher_running_mean_std'])
             self.proprio_mean_std.load_state_dict(checkpoint['proprio_mean_std'])
@@ -1223,7 +1230,7 @@ class TactileDAgger(object):
                 checkpoint_path=str(fn),
             )
             self.teacher.load_state_dict(checkpoint['model'], strict=True)
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
             ckpt_teacher = infer_teacher_tactile_encoder_type_from_state_dict(checkpoint['model'])
             cfg_teacher, _ = resolve_tactile_encoder_type(self.network_config)
             raise RuntimeError(
@@ -1247,7 +1254,12 @@ class TactileDAgger(object):
     def restore_test(self, fn):
         checkpoint = torch.load(fn, map_location=self.device)
         self.student.load_state_dict(checkpoint['student'])
-        self.teacher.load_state_dict(checkpoint['teacher_model'])
+        validate_teacher_tactile_checkpoint_compatibility(
+            checkpoint['teacher_model'],
+            self.teacher.state_dict(),
+            checkpoint_path=str(fn),
+        )
+        self.teacher.load_state_dict(checkpoint['teacher_model'], strict=True)
         self.teacher_obs_rms.load_state_dict(checkpoint['teacher_running_mean_std'])
         self.proprio_mean_std.load_state_dict(checkpoint['proprio_mean_std'])
 

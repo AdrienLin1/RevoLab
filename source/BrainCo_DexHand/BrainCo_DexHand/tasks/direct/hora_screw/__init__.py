@@ -45,6 +45,15 @@ gym.register(
 )
 
 gym.register(
+    id="BrainCo-Direct-Revo3-HoraValveDriver25-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_env:Revo3HandScrewEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_env_cfg:Revo3HandValveDriver25EnvCfg",
+    },
+)
+
+gym.register(
     id="BrainCo-Direct-Revo3-HoraValveDriver40-v0",
     entry_point=f"{__name__}.revo3_hand_screw_env:Revo3HandScrewEnv",
     disable_env_checker=True,
@@ -87,6 +96,15 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandVavleDriverTactileEnvCfg",
+    },
+)
+
+gym.register(
+    id="BrainCo-Direct-Revo3-HoraValveDriverTactile25-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_env:Revo3HandScrewTactileEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandValveDriver25TactileEnvCfg",
     },
 )
 
@@ -137,6 +155,15 @@ gym.register(
 )
 
 gym.register(
+    id="RevoHoraValveDriver25-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_env:Revo3HandScrewEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_env_cfg:Revo3HandValveDriver25EnvCfg",
+    },
+)
+
+gym.register(
     id="RevoHoraValveDriver40-v0",
     entry_point=f"{__name__}.revo3_hand_screw_env:Revo3HandScrewEnv",
     disable_env_checker=True,
@@ -178,6 +205,15 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandVavleDriverTactileEnvCfg",
+    },
+)
+
+gym.register(
+    id="RevoHoraValveDriverTactile25-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_env:Revo3HandScrewTactileEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandValveDriver25TactileEnvCfg",
     },
 )
 

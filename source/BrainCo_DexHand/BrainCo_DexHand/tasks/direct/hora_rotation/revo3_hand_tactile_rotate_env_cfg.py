@@ -17,6 +17,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg
 from isaaclab.utils import configclass
 
+from ...tactile_layout import ESTIMATED_OFFICIAL_LAYOUT
 from .assets import (
     BALL_INIT_POS,
     CYLINDER_INIT_POS,
@@ -89,6 +90,10 @@ class Revo3HandTactileRotateEnvCfg(
     Revo3HandHoraEnvCfg,
 ):
     """Add TacSL observations to continuous HORA rotation."""
+
+    # Match tactile valve tasks: thumb 31 nodes plus 21 nodes on each of the
+    # other four fingers, for 115 physical tactile nodes in total.
+    tactile_layout = ESTIMATED_OFFICIAL_LAYOUT
 
     # Teacher actor frame: joint positions, current targets, and five legacy
     # contact magnitudes. Rotation speed is intentionally not observed.

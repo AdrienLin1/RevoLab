@@ -1,8 +1,8 @@
-# Stage1 teacher: flat privileged MLP.
-# Stage2 student: GRU over the tactile structural history.
+# Stage1 teacher: flat privileged MLP over the five-finger 115-node physical
+# tactile layout. Stage2 student: GRU over the tactile structural history.
 
 algo: PPO
-tactile_layout: regular_grid
+tactile_layout: estimated_official
 network:
   mlp:
     units: [512, 256, 128]
@@ -48,7 +48,8 @@ ppo:
   save_frequency: 500
   max_agent_steps: 300000000
   priv_info: True
-  priv_info_dim: 328
+  # Rotation base privilege (8) + five-finger physical tactile frame (1170).
+  priv_info_dim: 1178
   priv_info_embed_dim: 32
   proprio_adapt: False
   tactile_distill_coef: 0.0

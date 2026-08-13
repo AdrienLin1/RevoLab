@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 import pytest
 import torch
@@ -21,6 +22,11 @@ REGISTRY_PATH = ROTATION_DIR / "__init__.py"
 TRAIN_PATH = REPO_ROOT / "scripts/hora/train.py"
 YAML_PATH = ROTATION_DIR / "agents/Revo3HandTactileRotate.yaml"
 YAML_DIR = ROTATION_DIR / "agents"
+PHYSICAL_LAYOUT_PATH = (
+    REPO_ROOT
+    / "source/BrainCo_DexHand/BrainCo_DexHand/tasks/tactile_layouts"
+    / "revo3_right_official_diagram_estimate_v5.json"
+)
 
 
 def _class_literals(path: Path, class_name: str) -> dict[str, object]:
@@ -72,6 +78,8 @@ def test_tactile_rotate_config_uses_unbounded_rotation_without_a_command():
     assert cfg["student_proprio_frame_dim"] == 42
     assert cfg["student_proprio_history_dim"] == 126
     assert cfg["student_obs_dim"] == 190
+    assert "tactile_layout = ESTIMATED_OFFICIAL_LAYOUT" in CFG_PATH.read_text(encoding="utf-8")
+    assert "self.priv_info_buf[:, 8]" not in source
     assert "target_angvel" not in source
     assert "compute_target_angvel_terms" not in source
 
@@ -130,15 +138,29 @@ def test_ball_and_cylinder_are_registered_and_routed_through_tactile_dagger():
     assert "agent_cls = TactileDAgger" in train
 
 
-def test_tactile_rotate_yaml_uses_raw_reward_scale_and_tactile_teacher():
-    """Use the raw task reward while retaining tactile teacher/student networks."""
+def test_tactile_rotate_yaml_uses_physical_layout_and_tactile_teacher():
+    """Use the 115-node physical layout with the tactile teacher/student networks."""
     config = yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))
 
-    assert config["tactile_layout"] == "regular_grid"
+    assert config["tactile_layout"] == "estimated_official"
     assert config["ppo"]["reward_scale"] == pytest.approx(1.0)
-    assert config["ppo"]["priv_info_dim"] == 328
+    assert config["ppo"]["priv_info_dim"] == 1178
     assert config["network"]["tactile_encoder"]["type"] == "mlp"
     assert config["network"]["student_tactile_encoder"]["type"] == "conv1d"
+
+
+def test_tactile_rotate_physical_layout_has_valve_compatible_115_nodes():
+    """Keep rotation and five-finger valve tasks on the same tactile node contract."""
+    config = yaml.safe_load(YAML_PATH.read_text(encoding="utf-8"))
+    layout = json.loads(PHYSICAL_LAYOUT_PATH.read_text(encoding="utf-8"))
+    finger_order = ("thumb", "index", "middle", "ring", "little")
+    sensor_counts = tuple(len(layout["fingers"][name]["sensors"]) for name in finger_order)
+
+    assert sensor_counts == (31, 21, 21, 21, 21)
+    assert sum(sensor_counts) == 115
+    teacher_tactile_dim = sum(sensor_counts) * 10 + len(finger_order) * 4
+    assert teacher_tactile_dim == 1170
+    assert config["ppo"]["priv_info_dim"] == 8 + teacher_tactile_dim
 
 
 def test_tactile_rotate_yamls_cover_mlp_teacher_and_student_encoders():
@@ -155,8 +177,9 @@ def test_tactile_rotate_yamls_cover_mlp_teacher_and_student_encoders():
             config["network"]["tactile_encoder"]["type"],
             config["network"]["student_tactile_encoder"]["type"],
         )
+        assert config["tactile_layout"] == "estimated_official"
         assert config["ppo"]["reward_scale"] == pytest.approx(1.0)
-        assert config["ppo"]["priv_info_dim"] == 328
+        assert config["ppo"]["priv_info_dim"] == 1178
 
     assert observed == expected
     assert {teacher for teacher, _ in observed.values()} == {"mlp"}
