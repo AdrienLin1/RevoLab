@@ -21,6 +21,12 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg
 from isaaclab.sim.converters import UrdfConverterCfg
 
+from .xy_stage import (
+    XY_STAGE_ACTUATOR_EXPR,
+    XY_STAGE_ACTUATOR_GROUP,
+    XY_STAGE_JOINT_NAMES,
+)
+
 _REPO_ROOT = Path(__file__).resolve().parents[6]
 _REVO3_USD = str(_REPO_ROOT / "assets" / "usd" / "revo3_right.usd")
 _TRINUT_URDF = str(_REPO_ROOT / "assets" / "urdf" / "screw" / "trinut" / "trinut.urdf")
@@ -147,6 +153,68 @@ REVO3_HAND_VAVLE_DRIVER_CFG = _make_hand_cfg({
     "right_little_MPR_joint": 0.22, "right_little_MCP_joint": 1.18,
     "right_little_PIP_joint": 0.30, "right_little_DIP_joint": 0.03,
 }, HAND_INIT_POS_VAVLE_DRIVER)
+
+
+def make_xy_stage_hand_cfg(
+    base_cfg: ArticulationCfg,
+    *,
+    joint_limit: float,
+    effort_limit: float,
+    velocity_limit: float,
+    armature: float = 0.0,
+    friction: float = 0.0,
+) -> ArticulationCfg:
+    """Return a hand config that also owns the two-axis translation stage.
+
+    The stage joints are authored into the articulation at scene-setup time
+    (see ``Revo3HandScrewTactileXYEnv._author_robot_stage_overrides``); this
+    config only adds the matching actuator group and their zero reset pose.
+
+    The stage actuator is deliberately a separate group with the
+    ``stage_.*_joint`` pattern so it can never be captured by the ``right_.*``
+    finger group. Like the fingers it runs with zero implicit PD stiffness and
+    damping: the environment applies explicit, effort-limited PD torques, and
+    ``effort_limit_sim`` enforces the same bound inside PhysX.
+
+    Args:
+        base_cfg: Hand configuration without the stage.
+        joint_limit: Prismatic hard limit (metres) used for validation only.
+        effort_limit: Maximum stage actuator force, newtons.
+        velocity_limit: Maximum stage joint velocity, m/s.
+        armature: Extra reflected inertia on the stage joints, kg.
+        friction: Stage joint friction force, newtons.
+
+    Returns:
+        A new ``ArticulationCfg`` with the stage actuator and reset pose.
+    """
+    if joint_limit <= 0.0:
+        raise ValueError(f"XY stage joint_limit must be positive, got {joint_limit}")
+    if effort_limit <= 0.0:
+        raise ValueError(f"XY stage effort_limit must be positive, got {effort_limit}")
+    if velocity_limit <= 0.0:
+        raise ValueError(f"XY stage velocity_limit must be positive, got {velocity_limit}")
+
+    joint_pos = dict(base_cfg.init_state.joint_pos)
+    for joint_name in XY_STAGE_JOINT_NAMES:
+        joint_pos[joint_name] = 0.0
+    actuators = dict(base_cfg.actuators)
+    if XY_STAGE_ACTUATOR_GROUP in actuators:
+        raise ValueError(
+            f"Actuator group {XY_STAGE_ACTUATOR_GROUP!r} already exists on the base hand"
+        )
+    actuators[XY_STAGE_ACTUATOR_GROUP] = ImplicitActuatorCfg(
+        joint_names_expr=[XY_STAGE_ACTUATOR_EXPR],
+        effort_limit_sim=float(effort_limit),
+        velocity_limit_sim=float(velocity_limit),
+        stiffness=0.0,
+        damping=0.0,
+        friction=float(friction),
+        armature=float(armature),
+    )
+    return base_cfg.replace(
+        init_state=base_cfg.init_state.replace(joint_pos=joint_pos),
+        actuators=actuators,
+    )
 
 
 def _make_screw_cfg(urdf_path: str, init_pos: tuple[float, float, float],

@@ -1,0 +1,110 @@
+# Small smoke configuration for the hierarchical valve task.
+#
+#   python scripts/hora/train.py --task valvedriver_tactile_xy \
+#       --algo HierarchicalPPO --train_cfg valvedriver_tactile_frame813_xy_smoke \
+#       --num_envs 16 --output_name xy_smoke --headless
+#
+# It exercises the WHOLE state machine in a couple of minutes: Stage 0 for one
+# epoch, then Stage 1, then Stage 2 joint fine-tuning. The activation threshold
+# is deliberately negative so activation does not depend on learned speed.
+# Never use this config for a real run.
+
+algo: HierarchicalPPO
+tactile_layout: estimated_official
+
+network:
+  mlp:
+    units: [512, 256, 128]
+
+  priv_mlp:
+    units: [256, 128, 32]
+
+  tactile_encoder:
+    type: finger_attention_gru
+    node_channels: [u, v, b, d, Fn, Ft1, Ft2]
+    node_input_dim: 7
+    node_source_channels: [0, 3, 5, 6, 7]
+    teacher_node_frame_channels: 10
+    finger_context_channels: 4
+    finger_token_dim: 32
+    finger_mlp_hidden_dim: 64
+    attention_heads: 4
+    attention_ff_dim: 64
+    gru_hidden_dim: 128
+    gru_num_layers: 1
+    gru_bidirectional: false
+    history_len: 10
+
+  student_tactile_encoder:
+    type: conv1d
+    gated_fusion: false
+    distill_dim: 32
+    output_dim: 128
+
+load_path: ''
+master_load_path: ''
+
+ppo:
+  output_name: 'debug'
+  normalize_input: True
+  normalize_value: True
+  value_bootstrap: True
+  num_actors: 16
+  normalize_advantage: True
+  separate_coord_advantage: False
+  reward_scale: 1.0
+  gamma: 0.99
+  tau: 0.95
+  learning_rate: 1e-3
+  kl_threshold: 0.01
+  horizon_length: 8
+  minibatch_size: 32
+  mini_epochs: 1
+  clip_value: True
+  critic_coef: 4
+  entropy_coef: 0.0
+  e_clip: 0.2
+  bounds_loss_coef: 0.0001
+  truncate_grads: True
+  grad_norm: 1.0
+  save_best_after: 0
+  save_frequency: 2
+  max_agent_steps: 1280
+  priv_info: True
+  priv_info_dim: 1181
+  priv_info_embed_dim: 32
+  proprio_adapt: False
+  tactile_distill_coef: 0.0
+
+follower:
+  actor_units: [64, 64]
+  critic_units: [64, 64]
+  critic_priv_dim: 11
+  init_log_sigma: -1.0
+  learning_rate: 3e-4
+  kl_threshold: 0.016
+  mini_epochs: 1
+  minibatch_size: 32
+  e_clip: 0.2
+  critic_coef: 2.0
+  entropy_coef: 0.005
+  bounds_loss_coef: 0.0001
+  truncate_grads: True
+  grad_norm: 1.0
+  weight_decay: 0.0
+  normalize_input: True
+  normalize_value: True
+
+hierarchical:
+  # Negative threshold + patience 1 => the follower activates after epoch 1
+  # regardless of the (untrained) rotation speed, so the smoke run reaches
+  # Stage 1 and Stage 2 within a handful of epochs.
+  activation_speed_threshold: -1.0
+  activation_patience: 1
+  activation_speed_ema_beta: 0.9
+  joint_finetune_enable: true
+  follower_only_steps: 256
+  master_finetune_lr_scale: 0.07
+  master_kl_coef: 1.0
+  freeze_tactile_encoder_in_joint_finetune: true
+  xy_curriculum_ramp_steps: 512

@@ -29,6 +29,11 @@ class Revo3HandScrewEnvCfg(DirectRLEnvCfg):
     # 800 control steps @ 20 Hz, matching dexscrew episodeLength=800
     episode_length_s = 40.0
     action_space = 21
+    # Action channels owned by the 21 finger joints. Task variants that append
+    # extra actuated DOFs (e.g. a two-axis translation stage) raise
+    # ``action_space`` but keep this at 21 so the 141-dim teacher observation and
+    # the 42-dim student proprio frame stay unchanged.
+    finger_action_space = 21
     observation_space = 141  # 3 frames x 47 dims (21 joint_pos + 21 targets + 5 contacts)
     prop_hist_len = 30
     priv_info_dim = 11

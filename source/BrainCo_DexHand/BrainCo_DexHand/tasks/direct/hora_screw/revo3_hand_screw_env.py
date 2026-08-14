@@ -125,6 +125,19 @@ class Revo3HandScrewEnv(DirectRLEnv):
         for joint_name in cfg.actuated_joint_names:
             self.actuated_dof_indices.append(self.hand.joint_names.index(joint_name))
         self.actuated_dof_indices.sort()
+        # Dimension vocabulary. ``num_robot_dofs`` counts every articulation DOF
+        # (21 for the plain hand, 23 once a two-axis translation stage is added),
+        # while ``num_finger_dofs`` / ``finger_dof_indices`` always address the 21
+        # finger joints that own the 141-dim observation and the finger rewards.
+        self.num_robot_dofs = self.num_hand_dofs
+        self.finger_dof_indices = list(self.actuated_dof_indices)
+        self.num_finger_dofs = len(self.finger_dof_indices)
+        if self.num_finger_dofs != int(self.cfg.action_space) - self._num_extra_action_dofs():
+            raise RuntimeError(
+                f"Resolved {self.num_finger_dofs} finger DOFs but the task action space "
+                f"({self.cfg.action_space}) expects "
+                f"{int(self.cfg.action_space) - self._num_extra_action_dofs()}"
+            )
 
         # action mask (dexscrew masks unused fingers per task)
         self.action_mask = torch.ones(self.num_hand_dofs, device=self.device)
@@ -226,6 +239,10 @@ class Revo3HandScrewEnv(DirectRLEnv):
                 torch.full((self.num_envs,), float(self.cfg.object_joint_friction_default))
             )
         self.nut_mass = self.object.root_physx_view.get_masses()[:, self.nut_body_idx].to(self.device)
+
+    def _num_extra_action_dofs(self) -> int:
+        """Return action channels beyond the finger joints (0 for base tasks)."""
+        return 0
 
     # ------------------------------------------------------------------
     # scene
@@ -463,28 +480,32 @@ class Revo3HandScrewEnv(DirectRLEnv):
         if not self.cfg.enable_tactile:
             sensed_contacts[:] = 0.0
 
-        # sliding window of (joint_pos, targets, contacts)
+        # sliding window of (finger joint_pos, finger targets, contacts). Only the
+        # 21 finger DOFs enter the 141-dim teacher observation; a translation
+        # stage, when present, is never mixed into this frame.
+        finger_ids = self.finger_dof_indices
+        finger_dof_pos = self.hand_dof_pos[:, finger_ids]
         prev_obs_buf = self.obs_buf_lag_history[:, 1:].clone()
-        joint_noise_matrix = (torch.rand(self.hand_dof_pos.shape, device=self.device) * 2.0 - 1.0) * self.cfg.joint_noise_scale
+        joint_noise_matrix = (torch.rand(finger_dof_pos.shape, device=self.device) * 2.0 - 1.0) * self.cfg.joint_noise_scale
         cur_obs_buf = unscale(
-            joint_noise_matrix + self.hand_dof_pos,
-            self.hand_dof_lower_limits,
-            self.hand_dof_upper_limits
+            joint_noise_matrix + finger_dof_pos,
+            self.hand_dof_lower_limits[:, finger_ids],
+            self.hand_dof_upper_limits[:, finger_ids],
         ).clone().unsqueeze(1)
-        cur_tar_buf = self.cur_targets[:, None]
+        cur_tar_buf = self.cur_targets[:, finger_ids].unsqueeze(1)
         cur_obs_buf = torch.cat([cur_obs_buf, cur_tar_buf], dim=-1)
         cur_obs_buf = torch.cat([cur_obs_buf, sensed_contacts.clone().unsqueeze(1)], dim=-1)
         self.obs_buf_lag_history[:] = torch.cat([prev_obs_buf, cur_obs_buf], dim=1)
 
         # refill buffers for envs that were just reset
         at_reset_env_ids = self.at_reset_buf.nonzero(as_tuple=False).squeeze(-1)
-        ndof = self.num_hand_dofs
+        ndof = self.num_finger_dofs
         self.obs_buf_lag_history[at_reset_env_ids, :, 0:ndof] = unscale(
-            self.hand_dof_pos[at_reset_env_ids],
-            self.hand_dof_lower_limits[at_reset_env_ids],
-            self.hand_dof_upper_limits[at_reset_env_ids],
+            finger_dof_pos[at_reset_env_ids],
+            self.hand_dof_lower_limits[at_reset_env_ids][:, finger_ids],
+            self.hand_dof_upper_limits[at_reset_env_ids][:, finger_ids],
         ).clone().unsqueeze(1)
-        self.obs_buf_lag_history[at_reset_env_ids, :, ndof:ndof*2] = self.hand_dof_pos[at_reset_env_ids].unsqueeze(1)
+        self.obs_buf_lag_history[at_reset_env_ids, :, ndof:ndof*2] = finger_dof_pos[at_reset_env_ids].unsqueeze(1)
         self.obs_buf_lag_history[at_reset_env_ids, :, ndof*2:ndof*2+5] = sensed_contacts[at_reset_env_ids].unsqueeze(1)
         obs_buf = (self.obs_buf_lag_history[:, -3:].reshape(self.num_envs, -1)).clone()
 
@@ -584,6 +605,16 @@ class Revo3HandScrewEnv(DirectRLEnv):
         self.extras["metrics/angular_velocity_per_env"] = nut_dof_linvel.detach()
         self.extras["screw/angular_position"] = self.nut_dof_pos.mean()
         self.extras["screw/positive_vel_ratio"] = (nut_dof_linvel > 0).float().mean()
+        # Speed-distribution metrics. They are logged identically by the base
+        # and hierarchical tasks so TensorBoard can compare the two runs.
+        self.extras["screw/angular_velocity_positive_mean"] = (
+            nut_dof_linvel.clamp_min(0.0).mean()
+        )
+        for threshold in (0.8, 1.0, 2.0, 4.0):
+            label = f"{threshold:g}".replace(".", "_")
+            self.extras[f"screw/fraction_above_{label}"] = (
+                nut_dof_linvel > threshold
+            ).float().mean()
         self.extras["screw/thumb_nut_dist"] = thumb_dist.mean()
         self.extras["screw/index_nut_dist"] = index_dist.mean()
         self.extras["screw/proximity_finger_dist"] = mean_dist.mean()

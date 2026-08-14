@@ -225,3 +225,30 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.revo3_hand_screw_tactile_env_cfg:Revo3HandValveDriver40TactileEnvCfg",
     },
 )
+
+# Hierarchical variant: tactile valve task on a two-axis physical translation
+# stage (21 finger + 2 XY action channels). The original tactile valve task
+# above is unchanged.
+gym.register(
+    id="BrainCo-Direct-Revo3-HoraValveDriverTactileXY-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_xy_env:Revo3HandScrewTactileXYEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.revo3_hand_screw_tactile_xy_env_cfg:"
+            "Revo3HandVavleDriverTactileXYEnvCfg"
+        ),
+    },
+)
+
+gym.register(
+    id="RevoHoraValveDriverTactileXY-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_xy_env:Revo3HandScrewTactileXYEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.revo3_hand_screw_tactile_xy_env_cfg:"
+            "Revo3HandVavleDriverTactileXYEnvCfg"
+        ),
+    },
+)

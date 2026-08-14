@@ -457,13 +457,18 @@ class Revo3HandScrewTactileMixinCfg:
                 f"student_tactile_history_len ({self.student_tactile_history_len}) so teacher/student "
                 f"temporal transformers stay aligned"
             )
+        # The student proprio frame is a *finger* frame: joint_pos + targets for
+        # the 21 finger joints only. Extra actuated DOFs never widen it.
+        finger_action_space = int(
+            getattr(self, "finger_action_space", self.action_space)
+        )
         expected_proprio_frame_dim = (
-            2 * self.action_space + int(self.student_proprio_command_dim)
+            2 * finger_action_space + int(self.student_proprio_command_dim)
         )
         if self.student_proprio_frame_dim != expected_proprio_frame_dim:
             raise ValueError(
                 f"student_proprio_frame_dim ({self.student_proprio_frame_dim}) must equal "
-                "joint_pos + targets + public command channels = "
+                "finger joint_pos + finger targets + public command channels = "
                 f"{expected_proprio_frame_dim}"
             )
         if self.student_proprio_history_dim != self.student_proprio_history_len * self.student_proprio_frame_dim:

@@ -49,13 +49,21 @@ parser.add_argument('--task', type=str, default='cylinder',
                              'valvedriver', 'valvedriver_25', 'valvedriver_40', 'vavledriver',
                              'nutbolt_tactile', 'screwdriver_tactile',
                              'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
-                             'vavledriver_tactile'])
-parser.add_argument('--algo', type=str, default='PPO', choices=['PPO', 'ProprioAdapt'])
+                             'vavledriver_tactile',
+                             'valvedriver_tactile_xy'])
+parser.add_argument('--algo', type=str, default='PPO',
+                    choices=['PPO', 'ProprioAdapt', 'HierarchicalPPO'])
 parser.add_argument('--train_cfg', type=str, default='',
                     help='Train yaml name (default: Revo3HandHora for ball/cylinder, '
                          'Revo3HandScrew for screw/valve tasks).')
 parser.add_argument('--output_name', type=str, default='debug')
-parser.add_argument('--checkpoint', type=str, default='')
+parser.add_argument('--checkpoint', type=str, default='',
+                    help='Full training resume. For --algo HierarchicalPPO this must be a '
+                         'complete hierarchical checkpoint (models + optimizers + curriculum).')
+parser.add_argument('--master_checkpoint', type=str, default='',
+                    help='HierarchicalPPO only: strictly warm-start the 21-D master policy '
+                         '(weights + normalization) from an existing Stage-1 teacher '
+                         'checkpoint. This is NOT a hierarchical resume.')
 parser.add_argument('--cache_file', type=str, default='', help='Override grasp cache filename under assets/grasp_cache/hora/.')
 parser.add_argument('--usd', type=str, default='', help='Override hand USD path.')
 parser.add_argument('--num_envs', type=int, default=4096)
@@ -89,11 +97,13 @@ args = parser.parse_args()
 if args.tactile_vis_show and not args.visualize_tactile:
     args.visualize_tactile = True
 
+# Tasks whose hand additionally rides on a physical two-axis translation stage.
+_XY_SCREW_TASKS = ('valvedriver_tactile_xy',)
 _TACTILE_SCREW_TASKS = (
     'nutbolt_tactile', 'screwdriver_tactile',
     'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
     'vavledriver_tactile',  # backward-compatible alias for the original typo
-)
+) + _XY_SCREW_TASKS
 _TACTILE_ROTATE_TASKS = ('rotate_ball_tactile', 'rotate_cylinder_tactile')
 _TACTILE_TASKS = _TACTILE_SCREW_TASKS + _TACTILE_ROTATE_TASKS
 _NON_TACTILE_SCREW_TASKS = (
@@ -103,7 +113,9 @@ _NON_TACTILE_SCREW_TASKS = (
 )
 _SCREW_TASKS = _NON_TACTILE_SCREW_TASKS + _TACTILE_SCREW_TASKS
 if not args.train_cfg:
-    if args.task in _TACTILE_ROTATE_TASKS:
+    if args.task in _XY_SCREW_TASKS:
+        args.train_cfg = 'valvedriver_tactile_frame813_xy'
+    elif args.task in _TACTILE_ROTATE_TASKS:
         args.train_cfg = 'Revo3HandTactileRotate'
     elif args.task in _TACTILE_SCREW_TASKS:
         args.train_cfg = 'Revo3HandScrewTactile'
@@ -130,6 +142,8 @@ def _is_stage2_checkpoint(path: str) -> bool:
 
 
 def _default_output_name() -> str:
+    if args.algo == 'HierarchicalPPO':
+        return 'run_hier_continue' if args.checkpoint else f'run_hier_{args.task}'
     if args.algo == 'PPO':
         return 'run1_continue' if args.checkpoint else f'run_{args.task}'
     # Stage2: output to Stage1's run dir
@@ -193,6 +207,7 @@ from BrainCo_DexHand.algo.hora.models.models import (
 )
 from BrainCo_DexHand.algo.hora.padapt.padapt import ProprioAdapt
 from BrainCo_DexHand.algo.hora.padapt.tactile_dagger import TactileDAgger
+from BrainCo_DexHand.algo.hora.ppo.hierarchical_ppo import HierarchicalPPO
 from BrainCo_DexHand.algo.hora.ppo.ppo import PPO
 from BrainCo_DexHand.algo.hora.utils.misc import set_np_formatting, set_seed
 from BrainCo_DexHand.tasks.direct.hora_rotation.assets import (
@@ -225,11 +240,18 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env_cfg im
     Revo3HandValveDriver40TactileEnvCfg,
     Revo3HandVavleDriverTactileEnvCfg,
 )
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy_env import (
+    Revo3HandScrewTactileXYEnv,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy_env_cfg import (
+    Revo3HandVavleDriverTactileXYEnvCfg,
+)
 
 
 _ALGO_MAP = {
     'PPO': PPO,
     'ProprioAdapt': ProprioAdapt,
+    'HierarchicalPPO': HierarchicalPPO,
 }
 
 _TASK_ROBOT_CFG = {'ball': REVO3_HAND_BALL_CFG, 'cylinder': REVO3_HAND_CYLINDER_CFG}
@@ -258,6 +280,13 @@ def _build_full_config(seed: int):
     print(f'[INFO] Tactile layout: {args.tactile_layout} (source: {layout_source})', flush=True)
     train_cfg.algo = args.algo
     train_cfg.load_path = os.path.abspath(args.checkpoint) if args.checkpoint else ''
+    # HierarchicalPPO only: warm-start path for the 21-D master policy. It is
+    # deliberately separate from ``load_path`` so an old Stage-1 checkpoint can
+    # never be mistaken for a complete hierarchical resume.
+    master_checkpoint = getattr(args, 'master_checkpoint', '')
+    train_cfg.master_load_path = (
+        os.path.abspath(master_checkpoint) if master_checkpoint else ''
+    )
     train_cfg.ppo.output_name = args.output_name
     if args.num_envs <= 0:
         raise ValueError(f'num_envs must be positive, got {args.num_envs}')
@@ -312,6 +341,7 @@ _SCREW_ENV_CFG = {
     'valvedriver_tactile25': Revo3HandValveDriver25TactileEnvCfg,
     'valvedriver_tactile_40': Revo3HandValveDriver40TactileEnvCfg,
     'vavledriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
+    'valvedriver_tactile_xy': Revo3HandVavleDriverTactileXYEnvCfg,
 }
 
 _TACTILE_ROTATE_ENV_CFG = {
@@ -477,6 +507,38 @@ def _attach_env_runtime_to_config(full_config, env_cfg, task_name: str) -> None:
                 float(env_cfg.target_angvel_min),
                 float(env_cfg.target_angvel_max),
             ]
+    # The two-axis translation stage is identified by its own config contract,
+    # not by a task-name list, so this stays valid for any future XY variant.
+    if hasattr(env_cfg, 'xy_joint_limit'):
+        runtime.update(
+            {
+                'finger_action_dim': int(env_cfg.finger_action_space),
+                'xy_action_dim': int(env_cfg.action_space) - int(env_cfg.finger_action_space),
+                'xy_stage_joint_names': [
+                    str(value) for value in env_cfg.xy_stage_joint_names
+                ],
+                'xy_stage_world_axes': [
+                    str(value) for value in env_cfg.xy_stage_world_axes
+                ],
+                'xy_joint_limit_m': float(env_cfg.xy_joint_limit),
+                'xy_workspace_m': [
+                    float(env_cfg.xy_workspace_initial),
+                    float(env_cfg.xy_workspace_final),
+                ],
+                'xy_action_scale_m': [
+                    float(env_cfg.xy_action_scale_initial),
+                    float(env_cfg.xy_action_scale_final),
+                ],
+                'xy_effort_limit_n': float(env_cfg.xy_effort_limit),
+                'xy_velocity_limit_mps': float(env_cfg.xy_velocity_limit),
+                'xy_acceleration_limit_mps2': float(env_cfg.xy_acceleration_limit),
+                'xy_pgain': float(env_cfg.xy_pgain),
+                'xy_dgain': float(env_cfg.xy_dgain),
+                'xy_curriculum_ramp_steps': int(env_cfg.xy_curriculum_ramp_steps),
+                'follower_obs_dim': 159,
+                'high_speed_reward_enable': bool(env_cfg.high_speed_reward_enable),
+            }
+        )
     full_config.env_runtime = OmegaConf.create(runtime)
 
 
@@ -580,6 +642,23 @@ def main():
         raise ValueError('--test requires --checkpoint')
     if args.algo == 'ProprioAdapt' and not args.checkpoint:
         raise ValueError('ProprioAdapt training requires --checkpoint')
+    if args.master_checkpoint and args.algo != 'HierarchicalPPO':
+        raise ValueError('--master_checkpoint is only valid with --algo HierarchicalPPO')
+    if args.master_checkpoint and args.checkpoint:
+        raise ValueError(
+            '--master_checkpoint (warm-start the master only) and --checkpoint '
+            '(full hierarchical resume) are mutually exclusive.'
+        )
+    if args.algo == 'HierarchicalPPO' and args.task not in _XY_SCREW_TASKS:
+        raise ValueError(
+            f'--algo HierarchicalPPO requires a two-axis stage task '
+            f'{_XY_SCREW_TASKS}, got {args.task!r}.'
+        )
+    if args.task in _XY_SCREW_TASKS and args.algo != 'HierarchicalPPO':
+        raise ValueError(
+            f'Task {args.task!r} has a 23-dim action space and requires '
+            '--algo HierarchicalPPO.'
+        )
 
     set_np_formatting()
     seed = set_seed(args.seed)
@@ -614,6 +693,8 @@ def main():
         env_cfg.sim.gravity = (0.0, 0.0, -9.81)  # full gravity for test/play
     if args.task in _TACTILE_ROTATE_TASKS:
         env_class = Revo3HandTactileRotateEnv
+    elif args.task in _XY_SCREW_TASKS:
+        env_class = Revo3HandScrewTactileXYEnv
     elif args.task in _TACTILE_SCREW_TASKS:
         env_class = Revo3HandScrewTactileEnv
     else:
@@ -683,16 +764,20 @@ def main():
         agent.restore_test(full_config.train.load_path)
         agent.test()
     else:
-        best_ckpt_path = os.path.join(
-            output_dif,
-            'stage1_nn' if full_config.train.algo == 'PPO' else 'stage2_nn',
-            'best.pth' if full_config.train.algo == 'PPO' else 'model_best.ckpt',
-        )
+        _BEST_CKPT_BY_ALGO = {
+            'PPO': ('stage1_nn', 'best.pth'),
+            'HierarchicalPPO': ('hier_nn', 'best_reward.pth'),
+            'ProprioAdapt': ('stage2_nn', 'model_best.ckpt'),
+        }
+        best_dir, best_name = _BEST_CKPT_BY_ALGO[str(full_config.train.algo)]
+        best_ckpt_path = os.path.join(output_dif, best_dir, best_name)
         if os.path.exists(best_ckpt_path) and args.force_overwrite:
             print(f"[WARNING] --force_overwrite enabled; existing checkpoints in {output_dif} may be replaced.", flush=True)
 
         _attach_env_runtime_to_config(full_config, env_cfg, args.task)
         _save_run_metadata(output_dif, full_config)
+        if full_config.train.master_load_path:
+            agent.restore_master_checkpoint(full_config.train.master_load_path)
         agent.restore_train(full_config.train.load_path)
         agent.train()
 

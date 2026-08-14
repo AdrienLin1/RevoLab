@@ -182,6 +182,10 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
         self.hand = Articulation(self.cfg.robot_cfg)
         self.object = Articulation(self.cfg.object_cfg)
         self._apply_sdf_collision_to_screw_body()
+        # Authoring hook for task variants that extend the hand articulation
+        # (e.g. the two-axis translation stage). It must run on the env_0
+        # prototype before cloning so every cloned env inherits the topology.
+        self._author_robot_stage_overrides()
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(usd_path=_LOCAL_GROUND_USD))
         self.scene.clone_environments(copy_from_source=False)
         self._initialize_object_radius_randomization()
@@ -202,6 +206,14 @@ class Revo3HandScrewTactileEnv(Revo3HandScrewEnv):
             self.scene.sensors[sensor_name] = sensor
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
+
+    def _author_robot_stage_overrides(self) -> None:
+        """Extend the spawned hand articulation before environment cloning.
+
+        The base tactile task keeps the hand exactly as authored in USD. The
+        two-axis translation variant overrides this to add its prismatic stage.
+        """
+        return None
 
     def _apply_sdf_collision_to_screw_body(self):
         """Switch the rotating nut/handle collision mesh to PhysX SDF approximation.

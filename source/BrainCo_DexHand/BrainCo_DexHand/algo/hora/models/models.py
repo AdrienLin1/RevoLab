@@ -1103,9 +1103,21 @@ class ActorCritic(nn.Module):
             )
         return self.tactile_encoder(tactile_hist)
 
+    @property
+    def tactile_latent_output_dim(self) -> int:
+        """Width of the per-forward tactile latent, or 0 when there is none.
+
+        Only the ``finger_attention_gru`` teacher exposes a latent: the final
+        GRU hidden state produced by the same forward pass that computes the
+        action distribution. The legacy flat-MLP teacher returns 0.
+        """
+        if self.tactile_encoder_type != "finger_attention_gru":
+            return 0
+        return int(self.tactile_latent_dim)
+
     @torch.no_grad()
     def act(self, obs_dict):
-        mu, logstd, value, _, _, features = self._actor_critic(
+        mu, logstd, value, _, _, features, tactile_latent = self._actor_critic(
             obs_dict, return_features=True
         )
         sigma = torch.exp(logstd)
@@ -1118,6 +1130,9 @@ class ActorCritic(nn.Module):
             "mus": mu,
             "sigmas": sigma,
             "features": features,
+            # Same-forward tactile latent so a follower policy never re-runs the
+            # tactile encoder. ``None`` for the legacy flat-MLP teacher.
+            "tactile_latent": tactile_latent,
         }
 
     @torch.no_grad()
@@ -1125,9 +1140,24 @@ class ActorCritic(nn.Module):
         mu, _, _, _, _ = self._actor_critic(obs_dict)
         return mu
 
+    @torch.no_grad()
+    def act_inference_with_latent(self, obs_dict):
+        """Return the deterministic action and the same-forward tactile latent.
+
+        Used at evaluation time by a hierarchical follower so the tactile
+        encoder still runs exactly once per control cycle.
+        """
+        mu, _logstd, _value, _extrin, _extrin_gt, _features, tactile_latent = (
+            self._actor_critic(obs_dict, return_features=True)
+        )
+        return mu, tactile_latent
+
     def _actor_critic(self, obs_dict, return_features=False):
         obs = obs_dict["obs"]
         extrin, extrin_gt = None, None
+        # Only the structured teacher has a tactile latent; it is exactly the
+        # encoder output of this forward pass, never a recomputation.
+        tactile_latent = None
         if self.priv_info:
             if self.tactile_encoder_type == "finger_attention_gru":
                 priv_info = obs_dict["priv_info"]
@@ -1146,6 +1176,7 @@ class ActorCritic(nn.Module):
                     priv_info,
                     obs_dict["tactile_hist"],
                 )
+                tactile_latent = extrin
                 # Base task privilege is intentionally passed through raw: no env_mlp,
                 # learned projection, normalization, LayerNorm, or tanh.
                 obs = torch.cat(
@@ -1173,14 +1204,20 @@ class ActorCritic(nn.Module):
         sigma = self.sigma
         result = (mu, mu * 0 + sigma, value, extrin, extrin_gt)
         if return_features:
-            return result + (x,)
+            return result + (x, tactile_latent)
         return result
 
     def forward(self, input_dict):
         prev_actions = input_dict.get("prev_actions", None)
-        mu, logstd, value, extrin, extrin_gt, features = self._actor_critic(
-            input_dict, return_features=True
-        )
+        (
+            mu,
+            logstd,
+            value,
+            extrin,
+            extrin_gt,
+            features,
+            tactile_latent,
+        ) = self._actor_critic(input_dict, return_features=True)
         sigma = torch.exp(logstd)
         distr = torch.distributions.Normal(mu, sigma)
         entropy = distr.entropy().sum(dim=-1)
@@ -1194,4 +1231,128 @@ class ActorCritic(nn.Module):
             "extrin": extrin,
             "extrin_gt": extrin_gt,
             "features": features,
+            "tactile_latent": tactile_latent,
+        }
+
+
+class FollowerActorCritic(nn.Module):
+    """Independent 2-D horizontal-translation follower policy.
+
+    The actor consumes exactly the deployable 159-D follower observation
+    (executed hand action + master tactile latent + XY stage self-state) and
+    emits a diagonal Gaussian over the two normalized translation channels.
+
+    The critic is *centralized*: it may additionally read a slice of the base
+    privileged task info. That slice never reaches the actor, so the learned
+    policy stays deployable while the value baseline can use privileged state.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        actions_num: int = 2,
+        actor_units=(256, 128, 64),
+        critic_units=(256, 128, 64),
+        critic_priv_dim: int = 0,
+        init_log_sigma: float = 0.0,
+    ):
+        super().__init__()
+        self.obs_dim = int(obs_dim)
+        self.actions_num = int(actions_num)
+        self.critic_priv_dim = int(critic_priv_dim)
+        if self.obs_dim <= 0:
+            raise ValueError(f"Follower obs_dim must be positive, got {self.obs_dim}")
+        if self.actions_num <= 0:
+            raise ValueError(
+                f"Follower actions_num must be positive, got {self.actions_num}"
+            )
+        if self.critic_priv_dim < 0:
+            raise ValueError(
+                f"Follower critic_priv_dim must be non-negative, got {self.critic_priv_dim}"
+            )
+
+        self.actor_units = list(actor_units)
+        self.critic_units = list(critic_units)
+        self.actor_mlp = MLP(units=self.actor_units, input_size=self.obs_dim)
+        self.mu = nn.Linear(self.actor_units[-1], self.actions_num)
+        self.sigma = nn.Parameter(
+            torch.full((self.actions_num,), float(init_log_sigma), dtype=torch.float32),
+            requires_grad=True,
+        )
+        self.critic_input_dim = self.obs_dim + self.critic_priv_dim
+        self.critic_mlp = MLP(units=self.critic_units, input_size=self.critic_input_dim)
+        self.value = nn.Linear(self.critic_units[-1], 1)
+
+        for module in self.modules():
+            if isinstance(module, nn.Linear) and getattr(module, "bias", None) is not None:
+                torch.nn.init.zeros_(module.bias)
+
+    def _check_actor_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        if obs.ndim != 2 or obs.shape[-1] != self.obs_dim:
+            raise RuntimeError(
+                f"Follower actor observation must have shape [B, {self.obs_dim}], "
+                f"got {tuple(obs.shape)}"
+            )
+        return obs
+
+    def _critic_input(self, obs: torch.Tensor, critic_priv: torch.Tensor | None) -> torch.Tensor:
+        if self.critic_priv_dim == 0:
+            if critic_priv is not None and critic_priv.shape[-1] != 0:
+                raise RuntimeError(
+                    "Follower critic was built without privileged input but received "
+                    f"{critic_priv.shape[-1]} extra channels"
+                )
+            return obs
+        if critic_priv is None:
+            raise RuntimeError(
+                "Follower centralized critic requires "
+                f"{self.critic_priv_dim} privileged channels, got None"
+            )
+        if critic_priv.ndim != 2 or critic_priv.shape[-1] != self.critic_priv_dim:
+            raise RuntimeError(
+                "Follower critic privileged input must have shape "
+                f"[B, {self.critic_priv_dim}], got {tuple(critic_priv.shape)}"
+            )
+        return torch.cat([obs, critic_priv], dim=-1)
+
+    def _distribution(self, obs: torch.Tensor):
+        features = self.actor_mlp(self._check_actor_obs(obs))
+        mu = self.mu(features)
+        sigma = torch.exp(self.sigma).expand_as(mu)
+        return mu, sigma, torch.distributions.Normal(mu, sigma)
+
+    @torch.no_grad()
+    def act(self, obs: torch.Tensor, critic_priv: torch.Tensor | None = None) -> dict:
+        """Sample one follower action and evaluate its centralized value."""
+        mu, sigma, distr = self._distribution(obs)
+        actions = distr.sample()
+        values = self.value(self.critic_mlp(self._critic_input(obs, critic_priv)))
+        return {
+            "actions": actions,
+            "neglogpacs": -distr.log_prob(actions).sum(dim=-1),
+            "values": values,
+            "mus": mu,
+            "sigmas": sigma,
+        }
+
+    @torch.no_grad()
+    def act_inference(self, obs: torch.Tensor) -> torch.Tensor:
+        """Return the deterministic follower action."""
+        mu, _sigma, _distr = self._distribution(obs)
+        return mu
+
+    def forward(self, input_dict: dict) -> dict:
+        """Evaluate stored follower actions for one PPO minibatch."""
+        obs = input_dict["obs"]
+        prev_actions = input_dict["prev_actions"]
+        mu, sigma, distr = self._distribution(obs)
+        values = self.value(
+            self.critic_mlp(self._critic_input(obs, input_dict.get("critic_priv")))
+        )
+        return {
+            "prev_neglogp": torch.squeeze(-distr.log_prob(prev_actions).sum(dim=-1)),
+            "values": values,
+            "entropy": distr.entropy().sum(dim=-1),
+            "mus": mu,
+            "sigmas": sigma,
         }

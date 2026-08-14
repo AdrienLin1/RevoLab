@@ -14,6 +14,7 @@ screw/valve 任务默认使用 **`tactile_layout: estimated_official`**（真实
 | `valvedriver_tactile25` | 五指、名义半径 25 mm 阀门 |
 | `valvedriver_tactile_40` | 五指、名义半径 40 mm 阀门 |
 | `rotate_ball_tactile` / `rotate_cylinder_tactile` | 连续旋转触觉任务 |
+| `valvedriver_tactile_xy` | 五指 35 mm 阀门 + 二维物理平移台（层级主从策略，23 维动作） |
 
 ## Stage1：MLP Force Oracle
 
@@ -266,12 +267,156 @@ python scripts/hora/train.py --task rotate_cylinder_tactile \
   --train_cfg Revo3HandTactileRotate --num_envs 4096 --headless
 ```
 
+## 层级主从策略：灵巧手 + 二维机械臂平移（新增）
+
+用于验证"末端二维平移是否能提高阀门持续旋转速度上限"。原 `valvedriver_tactile`
+任务、`PPO`/`ProprioAdapt` 路径、已有 checkpoint 格式全部保持不变。
+
+### 物理资产
+
+`valvedriver_tactile_xy` 在场景克隆前，把两个**真实 prismatic joint** 写进手的
+articulation（`Revo3HandScrewTactileXYEnv._author_robot_stage_overrides`）：
+
+```text
+world（被资产自带的全局 fixed root joint 固定）
+  -> stage_x_joint  (prismatic, 世界 X, 限位 ±0.05 m)
+  -> stage_x_carriage      (0.5 kg 刚体, 无碰撞体, disableGravity)
+  -> stage_y_joint  (prismatic, 世界 Y, 限位 ±0.05 m)
+  -> right_hand_base_link  (y 滑台 / 手掌安装座)
+  -> Revo3 手掌与 21 个手指关节
+```
+
+- 原来的 `right_hand_base_joint`（world→手掌 fixed weld）被置为 inactive。
+- 关节坐标系用手根四元数的逆做局部旋转，因此轴严格对齐**世界 X / 世界 Y**，
+  与掌心向下的抓取姿态无关。
+- 全流程**不存在** step 期间的 root teleport：`write_root_*_to_sim` 只在 reset 调用
+  （与原任务一致），水平运动完全由有限力矩的 PD 驱动产生。
+- 滑台使用独立 actuator 组 `xy_stage`（`stage_.*_joint`），不会被 `right_.*` 手指
+  actuator 误匹配。
+
+### 动作与观测
+
+```text
+action[:, :21]   -> 手指关节（原路径，未改动）
+action[:, 21:23] -> XY 滑台（位置目标增量）
+```
+
+- master 观测仍为 141 维（3 帧 × (21 关节角 + 21 目标 + 5 接触)）。
+- `student_proprio_frame_dim` 仍为 42（校验改用 `finger_action_space=21`）。
+- follower 观测严格 159 维：
+  `21 executed_hand_action + 128 tactile latent + 2 pos + 2 vel + 2 target +
+  2 prev_action + 2 workspace_margin`。
+
+### 训练
+
+```bash
+# 从零开始（Stage 0 先训 master，速度 EMA > 0.8 rad/s 连续 5 个 epoch 后自动激活 follower）
+python scripts/hora/train.py \
+  --task valvedriver_tactile_xy \
+  --algo HierarchicalPPO \
+  --train_cfg valvedriver_tactile_frame813_xy \
+  --output_name valvedriver_xy_hier \
+  --num_envs 4096 --headless
+```
+
+```bash
+# 用已有 21 维 Stage-1 teacher 热启动 master（只加载权重 + 归一化，不是 resume）
+python scripts/hora/train.py \
+  --task valvedriver_tactile_xy \
+  --algo HierarchicalPPO \
+  --train_cfg valvedriver_tactile_frame813_xy \
+  --master_checkpoint /ABS/PATH/TO/stage1_nn/best.pth \
+  --output_name valvedriver_xy_hier_from_master \
+  --num_envs 4096 --headless
+```
+
+```bash
+# 完整层级恢复（模型 + 优化器 + 课程状态）
+python scripts/hora/train.py \
+  --task valvedriver_tactile_xy \
+  --algo HierarchicalPPO \
+  --train_cfg valvedriver_tactile_frame813_xy \
+  --checkpoint /ABS/PATH/TO/hier_nn/last.pth \
+  --output_name valvedriver_xy_hier_resume \
+  --num_envs 4096 --headless
+```
+
+```bash
+# 冒烟（几分钟内跑完 Stage 0 -> Stage 1 -> Stage 2 全部状态机）
+python scripts/hora/train.py \
+  --task valvedriver_tactile_xy \
+  --algo HierarchicalPPO \
+  --train_cfg valvedriver_tactile_frame813_xy_smoke \
+  --output_name valvedriver_xy_smoke \
+  --num_envs 16 --headless
+```
+
+```bash
+# 回放 / 评估（确定性主从策略）
+python scripts/hora/train.py \
+  --task valvedriver_tactile_xy \
+  --algo HierarchicalPPO \
+  --train_cfg valvedriver_tactile_frame813_xy \
+  --checkpoint /ABS/PATH/TO/hier_nn/best_speed.pth \
+  --num_envs 16 --test
+```
+
+输出目录：`outputs/hora/revo3_right/<run>/hier_nn/{best_reward,best_speed,last}.pth`，
+TensorBoard 在 `hier_tb/`。`best_speed` 依据**平滑角速度**（`activation_speed_ema`）
+选择，不是 episode reward。
+
+### 课程状态机
+
+| Stage | master | follower | XY 动作 | workspace / action scale |
+|---|---|---|---|---|
+| 0 `stage0_master` | 正常 PPO 训练 | 不采样、不更新 | 恒为 `[0, 0]` | initial（不生效） |
+| 1 `stage1_follower` | 权重与输入归一化全部冻结 | 独立 PPO 训练 | 采样 | `xy_curriculum_ramp_steps` 内 1 cm → 5 cm |
+| 2 `stage2_joint_finetune`（可选） | actor trunk/head/critic 解冻，触觉编码器仍冻结，lr = follower_lr × 0.07，并对 Stage-1 起始策略加 KL | 继续训练 | 采样 | 继续 ramp |
+
+- Stage 0 → 1 的门限是**每个 rollout 有符号平均角速度的 EMA 严格大于 0.8 rad/s**，
+  且连续满足 `activation_patience`（默认 5）个 epoch。**激活后永久锁存**，速度回落
+  不会退回 Stage 0。0.8 rad/s 只用于课程触发，**从不作为奖励门控**。
+- Stage 1 → 2 由 `hierarchical.joint_finetune_enable` 控制，默认 `false`
+  （即纯 follower 消融实验）。
+
+### 公平对比与速度上限实验
+
+1. **公平对比（A）**：默认 `high_speed_reward_enable: false`，奖励与
+   `valvedriver_tactile` 完全一致，只额外扣一组很小的 XY 物理代价
+   （速度 / 加速度 / 加加速度 / 力 / 功率 / 边界饱和，均归一化到各自上限后加权，
+   默认权重 ≤ 0.05）。手指 torque/work 惩罚仍只统计 21 个手指关节，XY 出力单独统计。
+2. **速度上限（B）**：在 env cfg 打开 `high_speed_reward_enable=True`。奖励在
+   `angvel_clip_max`（4 rad/s，原 rotate reward 饱和点）之上连续线性上升到
+   `high_speed_target`，`high_speed_penalty_threshold` 之上再用
+   `rotate_penalty_scale` 抑制超速。全程连续、无 0.8 rad/s 跳变。
+
+### 关键日志
+
+`curriculum/hierarchical_stage`、`curriculum/activation_speed_ema`、
+`curriculum/activation_patience_counter`、`curriculum/xy_workspace`、
+`curriculum/xy_action_scale`、`hierarchical/master_frozen`、
+`hierarchical/joint_finetune_enabled`、`screw/angular_velocity`、
+`screw/angular_velocity_positive_mean`、`screw/fraction_above_{0_8,1,2,4}`、
+`xy/{position_x,position_y,velocity_norm,acceleration_norm,effort_norm,power,
+action_saturation_ratio,boundary_saturation_ratio,workspace_utilization}`、
+`losses/{master,follower}_{actor,critic}`、`info/{master,follower}_{kl,lr}`。
+
+`screw/fraction_above_*` 也由基础 screw env 记录，所以 baseline 与 hierarchical
+两次 run 可以在 TensorBoard 中直接对齐比较。
+
+### 相关回归测试
+
+```bash
+PYTHONPATH=source/BrainCo_DexHand python -m pytest -q tests/test_hora_hierarchical_xy.py
+```
+
 ## Smoke 配置
 
 | 配置 | 用途 |
 |---|---|
 | `Revo3HandScrewTactileSmoke` | screw/valve 快速冒烟 |
 | `Revo3HandScrewTactileGRUSmoke` | GRU 学生冒烟 |
+| `valvedriver_tactile_frame813_xy_smoke` | 层级主从策略冒烟（覆盖三个课程阶段） |
 
 ## 回放
 
