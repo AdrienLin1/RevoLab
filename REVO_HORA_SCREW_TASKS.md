@@ -521,21 +521,26 @@ action[:, 23:24] -> 机械臂末端 yaw（位置目标增量，弧度）
 
 ### yaw 默认参数
 
-| 配置项 | 默认值 | 单位 |
-|---|---|---|
-| `yaw_joint_limit` | 0.70 | rad |
-| `yaw_workspace_initial` → `final` | 0.15 → 0.60 | rad |
-| `yaw_action_scale_initial` → `final` | 0.015 → 0.040 | rad / control-step |
-| `yaw_velocity_limit` | 1.2 | rad/s |
-| `yaw_acceleration_limit` | 12.0 | rad/s² |
-| `yaw_joint_velocity_limit_sim` | 3.0 | rad/s |
-| `yaw_pgain` | 8.0 | N·m/rad |
-| `yaw_dgain` | 0.5 | N·m·s/rad |
-| `yaw_effort_limit` | 0.30 | N·m |
-| `yaw_action_smoothing` | 0.5 | — |
-| `yaw_use_action_delay` | true | — |
-| `yaw_jerk_reference` | 60.0 | rad/s³ |
-| `yaw_boundary_margin` | 0.10 | — |
+| 配置项 | 默认值 | 单位 | 备注 |
+|---|---|---|---|
+| `yaw_joint_limit` | 0.70 | rad | 硬限位，远在软 workspace 之外 |
+| `yaw_workspace_initial` → `final` | 0.05 → **0.25** | rad | 首轮实测后收窄 |
+| `yaw_action_scale_initial` → `final` | 0.005 → **0.020** | rad / control-step | 同上 |
+| `yaw_velocity_limit` | 1.2 | rad/s | |
+| `yaw_acceleration_limit` | 12.0 | rad/s² | |
+| `yaw_joint_velocity_limit_sim` | 3.0 | rad/s | |
+| `yaw_pgain` | 8.0 | N·m/rad | ω_n=28.4 rad/s |
+| `yaw_dgain` | 0.5 | N·m·s/rad | ζ=0.89（对标 XY 滑台 0.91） |
+| `yaw_effort_limit` | **1.5** | N·m | 线性带 = τ/kp = 188 mrad = 终态 workspace 的 75% |
+| `yaw_action_smoothing` | **0.8** | — | 压制 follower 的 bang-bang |
+| `yaw_use_action_delay` | true | — | |
+| `yaw_jerk_reference` | **600.0** | rad/s³ | jerk 是 20 Hz 下的二阶差分，被 1/dt²=400 放大 |
+| `yaw_boundary_margin` | 0.10 | — | |
+
+手绕**世界 Z 轴**的转动惯量 **J = 9.95e-3 kg·m²**（手重 1.105 kg、回转半径 95 mm，
+手指垂直于 yaw 轴伸出）。`yaw_pgain/yaw_dgain` 就是按这个 J 校到 ζ=0.89 的，
+和已验证的 XY 滑台一致，**不要单独动它们**——`ω_n` 与 `ζ` 只由 kp/kd/J 决定，
+调 `yaw_effort_limit` 不会改变它们，只会改变线性跟踪带 `τ/kp`。
 
 yaw 动作同样是"累计位置目标增量"：
 
@@ -551,13 +556,19 @@ XY 与 yaw 可以共用同一批 per-env action delay 随机样本，但 target�
 smoothed action、归一化尺度与 effort buffer 全部独立；**米和弧度从不进入同一个
 scale 或 limit**。reset 时 8 个 yaw controller buffer 全部清零，不跨 episode 泄漏。
 
-> 调参提示：`yaw_acceleration_limit * dt² = 0.03 rad`（20 Hz）小于
-> `yaw_action_scale_final = 0.040 rad`，因此满量程指令需要 2 个控制步达到稳态增量、
-> 反向需要 3 个控制步——这是有意的平滑，不是 clamp bug。另外
-> `yaw_effort_limit / yaw_pgain = 37.5 mrad` 就会饱和力矩，配合 0.60 rad 的终态
-> workspace 意味着 yaw 在外围区域几乎总是力矩受限；如果首轮训练发现 yaw 长期贴着
-> 硬限位、`yaw/tracking_error` 接近 workspace，请优先上调 `yaw_effort_limit`
-> 或下调 `yaw_workspace_final`。
+> 调参提示：`yaw_acceleration_limit * dt² = 0.03 rad`（20 Hz）大于
+> `yaw_action_scale_final = 0.020 rad`，所以满量程指令一步到位，只有满量程**反向**
+> （0.04 rad 摆动）会被限到 2 个控制步——这是有意的平滑，不是 clamp bug。
+>
+> 第一版参数（`yaw_effort_limit=0.30`、workspace 0.15/0.60、smoothing 0.5）实测失败，
+> 现默认值是按下面的实测结果改的，值得记住三个判据：
+> - `kd * yaw_velocity_limit / yaw_effort_limit` 必须 < 0.5。原来是 **200%**——
+>   光阻尼项就吃光了全部力矩预算，比例项一点不剩，控制器退化成饱和刹车。
+> - `yaw_effort_limit / yaw_pgain` 应覆盖终态 workspace 的一半以上。原来只有 6%。
+> - `yaw_cost/jerk` 应 < 1。原来是 **4.71×** 参考值，这一项独占 yaw 全部代价的 80%。
+>
+> 复训后请核对：`yaw/action_saturation_ratio < 0.3`、`yaw/effort / 1.5 < 0.5`、
+> `yaw/tracking_error` 明显下降（第一版是 0.081 rad）、`yaw_cost/jerk < 1`。
 
 ### 训练
 
@@ -609,10 +620,23 @@ python scripts/hora/train.py --task valvedriver_tactile_yaw --algo HierarchicalP
 
 | Stage | master | follower | stage 动作 | workspace / action scale |
 |---|---|---|---|---|
-| 0 `stage0_master` | 正常 PPO 训练 | 不采样、不更新 | 严格 `[0, 0, 0]` | initial（不生效） |
+| 0 `stage0_master` | 正常 PPO 训练 | 不采样、不更新 | 严格 `[0, 0, 0]`，且关节被**机械锁死** | initial（不生效） |
 | 1 `stage1_follower` | 权重与输入归一化全部冻结 | 3 维 `[x, y, yaw]` 一起训练 | 采样 | 同步 ramp（见下） |
 | 2 `stage2_joint_finetune` | actor trunk / 21 维 head / critic 解冻，触觉编码器冻结，lr = follower_lr × 0.07，对 Stage-1 起始策略加 KL | 继续训练 | 采样 | 继续 ramp |
 
+- **Stage 0 机械锁死（重要）**：零动作**不等于**零位。yaw PD 在
+  `yaw_effort_limit / yaw_pgain = 37.5 mrad` 误差处就饱和，抓握反力矩会把手腕一路
+  推到硬限位——实测 34 个 Stage-0 epoch 后 `yaw/position` 已漂到 −0.47 rad（−27°）、
+  17–35% 的环境贴在 −0.70 rad 硬限位上，而策略输出始终是 0。因此 follower 未激活时，
+  环境用 `write_joint_position_limit_to_sim` 把**全部 stage 关节的位置限位**压到
+  ±`stage_lock_tolerance_{m,rad}`（默认 1e-4）。PhysX 的限位是硬约束，不受 drive
+  `maxForce` 限制，所以 Stage 0 严格等价于"手腕刚性固定"的 baseline；力矩上限**从未
+  被提高**，也没有任何 teleport。锁死状态下 PD 误差 ≈ 0，因此 yaw/XY 的全部物理代价
+  在 Stage 0 自然为 0。激活的那一刻限位恢复为 authored 硬限位，永不回锁。
+  开关：`stage_lock_when_follower_inactive`（默认 `true`）；TensorBoard 看
+  `stage/locked` 与 `curriculum/stage_locked`。
+  > 注意：`valvedriver_tactile_xy` 基线不受影响（它没有这个 mixin），其 XY 滑台在
+  > Stage 0 的漂移只有 ~1 mm（`xy_cost/boundary = 0.000`），本来就可忽略。
 - **同步激活**：Stage 0 → 1 只有**一个**锁存点——每 rollout 有符号平均角速度的 EMA
   严格大于 0.8 rad/s 且连续 `activation_patience`（默认 5）个 epoch。XY 与 yaw 在
   **完全相同的 `agent_step`** 激活，结构上不可能分开。激活后永久锁存。
@@ -628,8 +652,11 @@ python scripts/hora/train.py --task valvedriver_tactile_yaw --algo HierarchicalP
   | 1.00 | 0.005 m | 0.05 m | 0.040 rad | 0.60 rad |
 
   "同步"指 progress 与激活时刻同步，**不是**把米和弧度设成同一个数值。
-- Stage 1 → 2 由 `hierarchical.joint_finetune_enable` 控制。两个新 YAML 里
-  **默认 `true`**（`follower_only_steps: 50000000`），XY 基线 YAML 仍是 `false`。
+- Stage 1 → 2 由 `hierarchical.joint_finetune_enable` 控制。两个 yaw YAML 里
+  **默认 `true`** 且 `follower_only_steps: 5000000`（从 50M 缩短）：master 是对着
+  刚性手腕学会步态的，Stage 1 全程冻结、无法补偿旋转的接触系——首轮实测正是在激活后
+  速度从 0.79 掉到 0.63 rad/s。提早进入联合微调让 master 能适应会动的手腕。
+  XY 基线 YAML 仍是 `false`（保持原基线不变）。
 - Stage 2 中 master 与 follower 在**同一个 rollout** 内各自执行 optimizer step，
   共享 team reward，但保留各自的 PPO ratio、value、optimizer 与 normalizer；
   follower loss 不会反传进 master。
@@ -646,11 +673,30 @@ yaw 不是免费能源：与 XY 同风格的一组归一化非正代价（默认
 yaw/{position,velocity,target,tracking_error,effort,power,action_abs,
      action_saturation_ratio,boundary_saturation_ratio,workspace_utilization,
      at_positive_limit_ratio,at_negative_limit_ratio,stage_reward}
+stage/locked                       # 1 = Stage 0 机械锁死中
 yaw_cost/{velocity,acceleration,jerk,effort,power,boundary}
 yaw_penalty/{velocity,acceleration,jerk,effort,power,boundary}
 curriculum/{yaw_workspace,yaw_action_scale,stage_progress}
 hierarchical/follower_action_dim
+stage/total_stage_cost             # 本步全部 stage 代价（xy + yaw）
+screw/reward_excluding_stage_cost  # 扣除 stage 代价后的奖励 -> 跨任务可比
 ```
+
+注意 `normalize_tensorboard_tag` 会把叶名以 `_reward` / `_penalty` 结尾的 tag 归到
+`reward/` 下，所以在 TensorBoard 里 `yaw/stage_reward` 显示为
+`reward/yaw_stage_reward`，`yaw_penalty/effort` 显示为 `reward/yaw_penalty_effort`。
+
+### 跨任务对比口径（重要）
+
+`valvedriver_tactile{,_xy,_xyyaw,_yaw}` 的**奖励函数不同**——yaw 任务额外扣一整套
+yaw 代价（第一版参数实测 −0.278/step ≈ **−223/episode**）。所以
+**直接比 `episode_rewards/step` 是无效的**。正确做法：
+
+1. 主指标用速度：`curriculum/activation_speed_ema`、`screw/angular_velocity`、
+   `screw/fraction_above_*`；
+2. 需要比奖励时用 `screw/reward_excluding_stage_cost`（已扣掉 stage 代价）；
+3. `joint_finetune_enable` 目前 xy=`false`、yaw 系=`true`；做严格 head-to-head 时
+   两边必须一致（要么两边都开，要么都关）。
 
 全部已有的 `xy/*`、`xy_cost/*`、`xy_penalty/*`、`curriculum/xy_*` 日志保持不变。
 

@@ -61,17 +61,35 @@ class Revo3HandScrewTactileYawMixinCfg:
     # Explicit, effort-limited PD in the environment (identical scheme to the
     # finger torque controller and to the XY stage). ``yaw_effort_limit`` is
     # enforced both here and by the yaw actuator's ``effort_limit_sim``.
-    # Conservative starting point: 8 N*m/rad saturates the 0.30 N*m ceiling at
-    # 37.5 mrad of tracking error, so large yaw commands are torque-limited and
-    # the joint can never behave as a free kinematic rotation source.
+    #
+    # Sizing (measured, not guessed). The hand's inertia about the WORLD-Z yaw
+    # axis is J = 9.95e-3 kg*m^2 (1.105 kg, 95 mm radius of gyration: the
+    # fingers stick out perpendicular to the axis). With kp = 8 and kd = 0.5
+    # that gives omega_n = 28.4 rad/s and zeta = 0.89 - essentially the XY
+    # stage's validated 0.91 - so the gains themselves are already right and
+    # are deliberately left alone.
+    #
+    # The first ceiling tried here (0.30 N*m) was the actual defect: the
+    # damping term alone reaches kd * yaw_velocity_limit = 0.6 N*m, i.e. 200%
+    # of that budget, so above half the velocity limit the proportional term
+    # had nothing left and the controller degenerated into a saturated brake.
+    # Measured consequence: |tau| pinned at 79% of the ceiling, the follower
+    # slammed its action to +/-1 for 74% of all steps, and the joint still
+    # barely moved. 1.5 N*m keeps omega_n and zeta unchanged (they depend only
+    # on kp/kd/J) while widening the linear tracking band from
+    # yaw_effort_limit / yaw_pgain = 38 mrad to 188 mrad, i.e. 75% of the
+    # final workspace below. It stays a finite, priced torque source.
     yaw_pgain = 8.0  # N*m/rad
     yaw_dgain = 0.5  # N*m*s/rad
-    yaw_effort_limit = 0.30  # N*m
+    yaw_effort_limit = 1.5  # N*m
     # Commanded-target rate limits (never a teleport, only a smoother command).
     yaw_velocity_limit = 1.2  # rad/s
     yaw_acceleration_limit = 12.0  # rad/s^2
     # EMA weight on the previous normalized action (0 disables smoothing).
-    yaw_action_smoothing = 0.5
+    # Raised from 0.5 after measuring a 74% action-saturation ratio: the extra
+    # low-pass keeps a bang-bang follower from injecting high-frequency command
+    # noise into a wrist the frozen master cannot compensate for.
+    yaw_action_smoothing = 0.8
     # Reuse the finger action-delay draw for the yaw command so the hand and the
     # wrist see the same per-env command latency. The yaw controller keeps its
     # own delayed target buffer; only the per-env delay *sample* is shared.
@@ -79,10 +97,19 @@ class Revo3HandScrewTactileYawMixinCfg:
 
     # ---- workspace / action-scale curriculum ---------------------------
     # Target increment per unit action, and the software workspace half-range.
-    yaw_action_scale_initial = 0.015  # rad per unit action
-    yaw_action_scale_final = 0.040  # rad per unit action
-    yaw_workspace_initial = 0.15  # rad
-    yaw_workspace_final = 0.60  # rad
+    #
+    # Narrowed from 0.15/0.60 rad and 0.015/0.040 rad after the first long run:
+    # the follower commanded full-scale actions 74% of the time yet only used
+    # 20% of its travel, and 0.60 rad (34 deg) rotates the contact frame far
+    # more than a five-finger wrap tuned against a rigid wrist can absorb -
+    # rotation speed decayed from 0.79 to 0.63 rad/s after activation. At the
+    # valve's 35 mm circumradius the 0.25 rad final workspace still moves the
+    # contact points ~9 mm tangentially, which is the same order as what the XY
+    # stage contributes.
+    yaw_action_scale_initial = 0.005  # rad per unit action
+    yaw_action_scale_final = 0.020  # rad per unit action
+    yaw_workspace_initial = 0.05  # rad
+    yaw_workspace_final = 0.25  # rad
     # Agent steps over which both ramp. This MUST equal the XY ramp on the
     # combined task: translation and yaw share one dimensionless progress and
     # activate at the same agent step.
@@ -121,7 +148,16 @@ class Revo3HandScrewTactileYawMixinCfg:
     yaw_effort_penalty_scale = -0.05  # per (tau / tau_limit)^2
     yaw_power_penalty_scale = -0.02  # per |tau * w| / P_ref
     yaw_boundary_penalty_scale = -0.05  # per boundary saturation
-    yaw_jerk_reference = 60.0  # rad/s^3 (5x the acceleration limit, as for XY)
+    # Jerk is a DOUBLE finite difference of the measured joint velocity at the
+    # 20 Hz control rate, so it is amplified by 1/dt^2 = 400 and is dominated by
+    # differentiation noise on a light, torque-limited revolute joint. The first
+    # value tried here (60 = 5x the acceleration limit, by analogy with the XY
+    # stage) was badly mis-scaled: measured yaw jerk ran at 4.7x that reference,
+    # so this single term produced 80% of the whole yaw cost budget
+    # (-0.222 of -0.278 per step, i.e. -178 reward per 800-step episode) while
+    # the XY stage sits at 0.25x its own reference. 600 rad/s^3 puts the
+    # measured jerk at ~0.5x, which is the same normalization regime as XY.
+    yaw_jerk_reference = 600.0  # rad/s^3
     # Fraction of the workspace treated as the boundary band for saturation.
     yaw_boundary_margin = 0.10
 

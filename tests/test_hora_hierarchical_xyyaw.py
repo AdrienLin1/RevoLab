@@ -190,8 +190,8 @@ class FakeStageEnv:
         self.curriculum = {
             "xy_workspace": 0.01,
             "xy_action_scale": 0.002,
-            "yaw_workspace": 0.15,
-            "yaw_action_scale": 0.015,
+            "yaw_workspace": 0.05,
+            "yaw_action_scale": 0.005,
         }
         self._obs = self._make_obs()
 
@@ -253,8 +253,8 @@ class FakeStageEnv:
     def set_stage_curriculum_progress(self, progress):
         self.curriculum_calls.append(float(progress))
         values = {
-            "yaw_workspace": YAW_STAGE.yaw_curriculum_value(0.15, 0.60, progress),
-            "yaw_action_scale": YAW_STAGE.yaw_curriculum_value(0.015, 0.040, progress),
+            "yaw_workspace": YAW_STAGE.yaw_curriculum_value(0.05, 0.25, progress),
+            "yaw_action_scale": YAW_STAGE.yaw_curriculum_value(0.005, 0.020, progress),
         }
         if self.stage_dofs == XYYAW_ACTION_DIM:
             values["xy_workspace"] = XY_STAGE.curriculum_value(0.01, 0.05, progress)
@@ -683,59 +683,51 @@ def test_yaw_target_respects_workspace_velocity_and_acceleration_limits():
     torch.testing.assert_close(delta, torch.full((1, 1), 0.001))
 
 
-def test_shipped_yaw_defaults_rate_limit_a_full_scale_command_reversal():
-    """Document what the shipped 12 rad/s^2 ceiling means at 20 Hz.
+def test_shipped_yaw_defaults_reach_full_command_in_one_step_and_reverse_in_two():
+    """Pin the shipped rate limits against the SHIPPED defaults, not literals.
 
-    ``a * dt^2 = 12 * 0.0025 = 0.03 rad`` is the largest change of the commanded
-    increment per control step, which is below the final action scale
-    (0.040 rad). A full-scale command therefore reaches its steady increment on
-    the second control step and a full reversal takes three: intended smoothing,
-    not a clamp bug.
+    With the narrowed curriculum the acceleration ceiling
+    ``a * dt^2 = 12 * 0.0025 = 0.03 rad`` now exceeds the final action scale
+    (0.020 rad), so a full-scale command takes effect immediately and only a
+    full reversal (a 0.040 rad swing) is rate limited, over two control steps.
     """
-    scale, workspace, velocity_limit, accel, dt = 0.040, 0.60, 1.2, 12.0, 0.05
+    cfg = _yaw_cfg_defaults()
+    scale = cfg.yaw_action_scale_final
+    workspace = cfg.yaw_workspace_final
+    accel = cfg.yaw_acceleration_limit
+    dt = 1.0 / 20.0
     max_delta_change = accel * dt * dt
     assert max_delta_change == pytest.approx(0.03)
-    assert max_delta_change < scale
+    # A single full-scale command is no longer acceleration limited.
+    assert max_delta_change > scale
+    # A full reversal still is.
+    assert 2.0 * scale > max_delta_change
+
+    def advance(action, target, delta, smoothed):
+        return YAW_STAGE.update_yaw_target(
+            action,
+            target,
+            delta,
+            smoothed,
+            action_scale=scale,
+            workspace=workspace,
+            velocity_limit=cfg.yaw_velocity_limit,
+            acceleration_limit=accel,
+            dt=dt,
+            smoothing=0.0,
+        )
 
     target = torch.zeros(1, 1)
     delta = torch.zeros(1, 1)
     smoothed = torch.zeros(1, 1)
-    deltas = []
-    for _ in range(3):
-        target, delta, smoothed = YAW_STAGE.update_yaw_target(
-            torch.ones(1, 1),
-            target,
-            delta,
-            smoothed,
-            action_scale=scale,
-            workspace=workspace,
-            velocity_limit=velocity_limit,
-            acceleration_limit=accel,
-            dt=dt,
-            smoothing=0.0,
-        )
-        deltas.append(float(delta))
-    assert deltas[0] == pytest.approx(0.03)
-    assert deltas[1] == pytest.approx(scale)
-    assert deltas[2] == pytest.approx(scale)
+    target, delta, smoothed = advance(torch.ones(1, 1), target, delta, smoothed)
+    assert float(delta) == pytest.approx(scale)
 
-    # Reversing from +scale to -scale needs three steps at 0.03 rad each.
     reverse = []
-    for _ in range(3):
-        target, delta, smoothed = YAW_STAGE.update_yaw_target(
-            -torch.ones(1, 1),
-            target,
-            delta,
-            smoothed,
-            action_scale=scale,
-            workspace=workspace,
-            velocity_limit=velocity_limit,
-            acceleration_limit=accel,
-            dt=dt,
-            smoothing=0.0,
-        )
+    for _ in range(2):
+        target, delta, smoothed = advance(-torch.ones(1, 1), target, delta, smoothed)
         reverse.append(float(delta))
-    assert reverse == pytest.approx([0.01, -0.02, -scale])
+    assert reverse == pytest.approx([scale - max_delta_change, -scale])
 
 
 def test_yaw_pd_controller_is_torque_limited():
@@ -760,7 +752,7 @@ def test_yaw_pd_controller_is_torque_limited():
     )
     torch.testing.assert_close(effort, torch.tensor([[-0.02]]))
 
-    # Saturation begins at |error| = tau_limit / kp = 37.5 mrad.
+    # Saturation begins at |error| = tau_limit / kp.
     boundary = YAW_STAGE.yaw_pd_effort(
         torch.tensor([[0.0375]]),
         torch.zeros(1, 1),
@@ -770,6 +762,54 @@ def test_yaw_pd_controller_is_torque_limited():
         effort_limit=0.30,
     )
     assert float(boundary) == pytest.approx(0.30)
+
+
+def test_shipped_yaw_actuator_can_track_and_is_not_damping_starved():
+    """The torque budget must leave room for the proportional term.
+
+    The first shipped ceiling (0.30 N*m) failed both checks below: the damping
+    term alone reached kd * yaw_velocity_limit = 0.6 N*m = 200% of the budget,
+    so above half the velocity limit the controller was a pure saturated brake,
+    and the linear tracking band was only 6% of the final workspace.
+    """
+    cfg = _yaw_cfg_defaults()
+    kp, kd, tau = cfg.yaw_pgain, cfg.yaw_dgain, cfg.yaw_effort_limit
+
+    # 1) Damping at full commanded speed must not eat the whole budget.
+    damping_at_max_speed = kd * cfg.yaw_velocity_limit
+    assert damping_at_max_speed / tau < 0.5, (
+        f"damping alone uses {damping_at_max_speed / tau:.0%} of the torque budget"
+    )
+
+    # 2) The linear (non-saturated) band must cover most of the workspace.
+    linear_band = tau / kp
+    assert linear_band / cfg.yaw_workspace_final >= 0.5, (
+        f"linear band {linear_band:.3f} rad is only "
+        f"{linear_band / cfg.yaw_workspace_final:.0%} of the final workspace"
+    )
+
+    # 3) The gains themselves are unchanged and still well damped against the
+    #    measured hand inertia about the world-Z yaw axis (9.95e-3 kg*m^2),
+    #    matching the validated XY stage's zeta ~ 0.91.
+    inertia = 9.95e-3
+    zeta = kd / (2.0 * math.sqrt(kp * inertia))
+    assert 0.7 <= zeta <= 1.1, f"yaw damping ratio {zeta:.2f} is outside [0.7, 1.1]"
+
+    # 4) It must track inside the early curriculum without saturating, while
+    #    still binding on large excursions - the XY stage is sized the same way
+    #    (its ceiling binds 10-25% of the time under load), so the joint never
+    #    becomes a free position source.
+    def hold(error):
+        return abs(float(YAW_STAGE.yaw_pd_effort(
+            torch.zeros(1, 1), torch.tensor([[error]]), torch.zeros(1, 1),
+            pgain=kp, dgain=kd, effort_limit=tau,
+        )))
+
+    assert hold(cfg.yaw_workspace_initial) < tau, "saturates inside the initial workspace"
+    assert hold(0.9 * linear_band) < tau
+    assert hold(cfg.yaw_workspace_final) == pytest.approx(tau), (
+        "the ceiling must still bind on a full-workspace excursion"
+    )
 
 
 def test_yaw_workspace_margin_and_boundary_saturation():
@@ -791,16 +831,16 @@ def test_yaw_config_contract_validation():
     cfg = _yaw_cfg_defaults()
     limits = YAW_STAGE.validate_yaw_stage_config(cfg)
     assert limits.joint_limit == pytest.approx(0.70)
-    assert limits.workspace_initial == pytest.approx(0.15)
-    assert limits.workspace_final == pytest.approx(0.60)
-    assert limits.action_scale_initial == pytest.approx(0.015)
-    assert limits.action_scale_final == pytest.approx(0.040)
+    assert limits.workspace_initial == pytest.approx(0.05)
+    assert limits.workspace_final == pytest.approx(0.25)
+    assert limits.action_scale_initial == pytest.approx(0.005)
+    assert limits.action_scale_final == pytest.approx(0.020)
     assert limits.velocity_limit == pytest.approx(1.2)
     assert limits.acceleration_limit == pytest.approx(12.0)
-    assert limits.effort_limit == pytest.approx(0.30)
+    assert limits.effort_limit == pytest.approx(1.5)
     assert limits.pgain == pytest.approx(8.0)
     assert limits.dgain == pytest.approx(0.5)
-    assert limits.action_smoothing == pytest.approx(0.5)
+    assert limits.action_smoothing == pytest.approx(0.8)
     assert limits.curriculum_ramp_steps == 20_000_000
     assert cfg.yaw_use_action_delay is True
     assert cfg.yaw_joint_velocity_limit_sim == pytest.approx(3.0)
@@ -840,6 +880,11 @@ def test_yaw_costs_are_all_non_positive_and_small():
     # One control step at 20 Hz cannot command more than the angular velocity
     # limit allows.
     assert cfg.yaw_action_scale_final <= cfg.yaw_velocity_limit * (1.0 / 20.0)
+    # The jerk reference must leave the measured jerk BELOW 1.0 in cost units.
+    # Jerk is a double finite difference at 20 Hz (amplified by 1/dt^2 = 400),
+    # so a reference of only a few times the acceleration limit turns this term
+    # into the dominant cost purely from differentiation noise.
+    assert cfg.yaw_jerk_reference >= 20.0 * cfg.yaw_acceleration_limit
 
 
 def test_yaw_runtime_limits_are_validated_in_radians_not_degrees():
@@ -925,8 +970,8 @@ def test_xy_and_yaw_activate_at_exactly_the_same_agent_step(tmp_path):
     assert curriculum["stage_progress"] == pytest.approx(0.0)
     assert curriculum["xy_workspace"] == pytest.approx(0.01)
     assert curriculum["xy_action_scale"] == pytest.approx(0.002)
-    assert curriculum["yaw_workspace"] == pytest.approx(0.15)
-    assert curriculum["yaw_action_scale"] == pytest.approx(0.015)
+    assert curriculum["yaw_workspace"] == pytest.approx(0.05)
+    assert curriculum["yaw_action_scale"] == pytest.approx(0.005)
 
     # Latched: a later speed collapse never reverts or re-times the stage.
     for speed in (-5.0, 0.0, 0.1):
@@ -947,11 +992,11 @@ def test_one_shared_progress_interpolates_metres_and_radians_together(tmp_path):
     ramp = agent.xy_curriculum_ramp_steps
 
     for fraction, xy_workspace, xy_scale, yaw_workspace, yaw_scale in (
-        (0.0, 0.01, 0.002, 0.15, 0.015),
-        (0.25, 0.02, 0.00275, 0.2625, 0.02125),
-        (0.5, 0.03, 0.0035, 0.375, 0.0275),
-        (1.0, 0.05, 0.005, 0.60, 0.040),
-        (3.0, 0.05, 0.005, 0.60, 0.040),  # clamped past the end of the ramp
+        (0.0, 0.01, 0.002, 0.05, 0.005),
+        (0.25, 0.02, 0.00275, 0.10, 0.00875),
+        (0.5, 0.03, 0.0035, 0.15, 0.0125),
+        (1.0, 0.05, 0.005, 0.25, 0.020),
+        (3.0, 0.05, 0.005, 0.25, 0.020),  # clamped past the end of the ramp
     ):
         agent.agent_steps = 4_000 + int(fraction * ramp)
         curriculum = agent._push_stage_curriculum()
@@ -1131,7 +1176,7 @@ def test_stage0_keeps_the_curriculum_at_progress_zero(tmp_path):
     agent.agent_steps = 10 * agent.xy_curriculum_ramp_steps
     curriculum = agent._push_stage_curriculum()
     assert curriculum["stage_progress"] == 0.0
-    assert curriculum["yaw_workspace"] == pytest.approx(0.15)
+    assert curriculum["yaw_workspace"] == pytest.approx(0.05)
     assert curriculum["xy_workspace"] == pytest.approx(0.01)
 
 
@@ -1175,18 +1220,18 @@ def test_stage2_starts_after_the_configured_follower_only_steps(tmp_path):
     env = FakeStageEnv(num_envs=4)
     agent, _ = _make_agent(tmp_path, env=env, full_config=config)
     assert agent.joint_finetune_enable is True
-    assert agent.follower_only_steps == 50_000_000
+    assert agent.follower_only_steps == 5_000_000
     agent.activation_speed_ema_beta = 0.0
     for _ in range(agent.activation_patience):
         agent._update_curriculum(2.0)
     assert agent.current_stage == STAGE_FOLLOWER
 
     # One step short of the boundary: still Stage 1.
-    agent.agent_steps = agent.stage_start_agent_step + 50_000_000 - 1
+    agent.agent_steps = agent.stage_start_agent_step + 5_000_000 - 1
     agent._update_curriculum(2.0)
     assert agent.current_stage == STAGE_FOLLOWER
 
-    agent.agent_steps = agent.stage_start_agent_step + 50_000_000
+    agent.agent_steps = agent.stage_start_agent_step + 5_000_000
     agent._update_curriculum(2.0)
     assert agent.current_stage == STAGE_JOINT_FINETUNE
 
@@ -1490,7 +1535,7 @@ def test_new_yamls_reuse_the_stage1_teacher_network_and_ppo_sections(path):
     assert new["follower"]["critic_priv_dim"] == 11
     hierarchical = new["hierarchical"]
     assert hierarchical["joint_finetune_enable"] is True
-    assert hierarchical["follower_only_steps"] == 50_000_000
+    assert hierarchical["follower_only_steps"] == 5_000_000
     assert hierarchical["master_finetune_lr_scale"] == 0.07
     assert hierarchical["master_kl_coef"] == 1.0
     assert hierarchical["freeze_tactile_encoder_in_joint_finetune"] is True
@@ -1731,9 +1776,9 @@ def test_runtime_metadata_separates_xy_and_yaw_action_dimensions():
     assert runtime["follower_obs_dim"] == 164
     assert runtime["stage_joint_names"] == list(STAGE_JOINT_ORDER)
     assert runtime["yaw_joint_limit_rad"] == pytest.approx(0.70)
-    assert runtime["yaw_workspace_rad"] == [0.15, 0.60]
-    assert runtime["yaw_action_scale_rad"] == [0.015, 0.040]
-    assert runtime["yaw_effort_limit_nm"] == pytest.approx(0.30)
+    assert runtime["yaw_workspace_rad"] == [0.05, 0.25]
+    assert runtime["yaw_action_scale_rad"] == [0.005, 0.020]
+    assert runtime["yaw_effort_limit_nm"] == pytest.approx(1.5)
     assert runtime["yaw_velocity_limit_rad_s"] == pytest.approx(1.2)
     assert runtime["yaw_pgain_nm_per_rad"] == pytest.approx(8.0)
     assert runtime["yaw_curriculum_ramp_steps"] == 20_000_000

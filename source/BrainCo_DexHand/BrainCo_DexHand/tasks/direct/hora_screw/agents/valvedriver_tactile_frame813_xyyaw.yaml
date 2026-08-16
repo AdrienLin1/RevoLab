@@ -97,7 +97,11 @@ follower:
   # Centralized critic only: the first 11 base privileged channels. They never
   # reach the follower actor.
   critic_priv_dim: 11
-  init_log_sigma: -1.0
+  # Raised from 0.0001 / -1.0 after the first long yaw run: the follower drove
+  # its action to the +/-1 bound 74% of the time while using only 20% of the
+  # yaw travel. A stronger bounds penalty plus a tighter initial sigma keep the
+  # stage command inside the linear range of the actuator.
+  init_log_sigma: -2.0
   learning_rate: 3e-4
   kl_threshold: 0.016
   mini_epochs: 5
@@ -105,7 +109,7 @@ follower:
   e_clip: 0.2
   critic_coef: 2.0
   entropy_coef: 0.005
-  bounds_loss_coef: 0.0001
+  bounds_loss_coef: 0.01
   truncate_grads: True
   grad_norm: 1.0
   weight_decay: 0.0
@@ -123,7 +127,10 @@ hierarchical:
   # Stage 1 -> Stage 2. Enabled here: after `follower_only_steps` the 21-D
   # master and the 3-D follower are fine-tuned jointly in the same rollout.
   joint_finetune_enable: true
-  follower_only_steps: 50000000
+  # Shortened from 50M: the master learned its gait against a rigid wrist and
+  # is frozen for the whole of Stage 1, so it cannot compensate a rotating
+  # contact frame. Entering joint fine-tuning early lets it adapt.
+  follower_only_steps: 5000000
   master_finetune_lr_scale: 0.07
   master_kl_coef: 1.0
   freeze_tactile_encoder_in_joint_finetune: true

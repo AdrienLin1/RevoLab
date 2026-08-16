@@ -80,7 +80,11 @@ follower:
   actor_units: [64, 64]
   critic_units: [64, 64]
   critic_priv_dim: 11
-  init_log_sigma: -1.0
+  # Raised from 0.0001 / -1.0 after the first long yaw run: the follower drove
+  # its action to the +/-1 bound 74% of the time while using only 20% of the
+  # yaw travel. A stronger bounds penalty plus a tighter initial sigma keep the
+  # stage command inside the linear range of the actuator.
+  init_log_sigma: -2.0
   learning_rate: 3e-4
   kl_threshold: 0.016
   mini_epochs: 1
@@ -88,7 +92,7 @@ follower:
   e_clip: 0.2
   critic_coef: 2.0
   entropy_coef: 0.005
-  bounds_loss_coef: 0.0001
+  bounds_loss_coef: 0.01
   truncate_grads: True
   grad_norm: 1.0
   weight_decay: 0.0

@@ -739,8 +739,25 @@ class Revo3HandYawStageMixin:
 
     def _get_rewards(self) -> torch.Tensor:
         total_reward = super()._get_rewards()
-        total_reward = total_reward + self._compute_yaw_stage_reward()
+        yaw_stage_reward = self._compute_yaw_stage_reward()
+        total_reward = total_reward + yaw_stage_reward
         self.extras["total_reward"] = total_reward.mean()
+
+        # Cross-task comparable reward. Each stage layout prices a different set
+        # of DOFs, so raw episode reward is NOT comparable between
+        # valvedriver_tactile{,_xy,_xyyaw,_yaw}: the yaw tasks additionally
+        # subtract the yaw cost bundle. Publishing the stage cost and the reward
+        # with it removed makes head-to-head curves meaningful; the speed
+        # metrics (screw/angular_velocity, curriculum/activation_speed_ema) stay
+        # the primary comparison.
+        stage_cost = yaw_stage_reward.mean()
+        xy_stage_cost = self.extras.get("xy/stage_reward")
+        if xy_stage_cost is not None:
+            stage_cost = stage_cost + xy_stage_cost
+        self.extras["stage/total_stage_cost"] = stage_cost
+        self.extras["screw/reward_excluding_stage_cost"] = (
+            total_reward.mean() - stage_cost
+        )
         return total_reward
 
     def _compute_yaw_stage_reward(self) -> torch.Tensor:
