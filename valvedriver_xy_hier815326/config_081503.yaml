@@ -1,0 +1,189 @@
+rl_device: cuda:0
+test: false
+seed: 42
+train:
+  algo: HierarchicalPPO
+  tactile_layout: estimated_official
+  network:
+    mlp:
+      units:
+      - 512
+      - 256
+      - 128
+    priv_mlp:
+      units:
+      - 256
+      - 128
+      - 32
+    tactile_encoder:
+      type: finger_attention_gru
+      node_channels:
+      - u
+      - v
+      - b
+      - d
+      - Fn
+      - Ft1
+      - Ft2
+      node_input_dim: 7
+      node_source_channels:
+      - 0
+      - 3
+      - 5
+      - 6
+      - 7
+      teacher_node_frame_channels: 10
+      finger_context_channels: 4
+      finger_token_dim: 32
+      finger_mlp_hidden_dim: 64
+      attention_heads: 4
+      attention_ff_dim: 64
+      gru_hidden_dim: 128
+      gru_num_layers: 1
+      gru_bidirectional: false
+      history_len: 10
+    student_tactile_encoder:
+      type: conv1d
+      gated_fusion: false
+      distill_dim: 32
+      output_dim: 128
+  load_path: ''
+  master_load_path: ''
+  ppo:
+    output_name: valvedriver_xy_hier815326
+    normalize_input: true
+    normalize_value: true
+    value_bootstrap: true
+    num_actors: 4096
+    normalize_advantage: true
+    separate_coord_advantage: false
+    reward_scale: 1.0
+    gamma: 0.99
+    tau: 0.95
+    learning_rate: 0.001
+    kl_threshold: 0.01
+    horizon_length: 8
+    minibatch_size: 4096
+    mini_epochs: 5
+    clip_value: true
+    critic_coef: 4
+    entropy_coef: 0.0
+    e_clip: 0.2
+    bounds_loss_coef: 0.0001
+    truncate_grads: true
+    grad_norm: 1.0
+    save_best_after: 0
+    save_frequency: 500
+    max_agent_steps: 1000000000
+    priv_info: true
+    priv_info_dim: 1181
+    priv_info_embed_dim: 32
+    proprio_adapt: false
+    tactile_distill_coef: 0.0
+  follower:
+    actor_units:
+    - 256
+    - 128
+    - 64
+    critic_units:
+    - 256
+    - 128
+    - 64
+    critic_priv_dim: 11
+    init_log_sigma: -1.0
+    learning_rate: 0.0003
+    kl_threshold: 0.016
+    mini_epochs: 5
+    minibatch_size: 8192
+    e_clip: 0.2
+    critic_coef: 2.0
+    entropy_coef: 0.005
+    bounds_loss_coef: 0.0001
+    truncate_grads: true
+    grad_norm: 1.0
+    weight_decay: 0.0
+    normalize_input: true
+    normalize_value: true
+  hierarchical:
+    activation_speed_threshold: 0.8
+    activation_patience: 5
+    activation_speed_ema_beta: 0.9
+    joint_finetune_enable: false
+    follower_only_steps: 50000000
+    master_finetune_lr_scale: 0.07
+    master_kl_coef: 1.0
+    freeze_tactile_encoder_in_joint_finetune: true
+    xy_curriculum_ramp_steps: 20000000
+env_runtime:
+  task: valvedriver_tactile_xy
+  grasp_cache_path: ''
+  tactile_layout: estimated_official
+  policy_rate_hz: 20.0
+  action_scale: 0.041666666666666664
+  action_dim: 23
+  observation_dim: 141
+  priv_info_dim: 1181
+  student_tactile_duration_tau: 20.0
+  student_tactile_duration_max: 100.0
+  tactile_shift_ema_beta: 0.7
+  tactile_shift_max: 0.2
+  tactile_active_finger_names:
+  - thumb
+  - index
+  - middle
+  - ring
+  - little
+  tactile_graph_sensor_counts:
+  - 31
+  - 21
+  - 21
+  - 21
+  - 21
+  tactile_graph_total_nodes: 115
+  tactile_priv_offset: 11
+  tactile_priv_dim: 1170
+  teacher_tactile_history_len: 10
+  teacher_tactile_frame_dim: 1170
+  tactile_observation_fingers:
+  - thumb
+  - index
+  - middle
+  - ring
+  - little
+  action_fingers:
+  - thumb
+  - index
+  - middle
+  - ring
+  - little
+  student_proprio_history_len: 3
+  student_proprio_frame_dim: 42
+  student_observation_schema: hora_tactile_student_physical_graph_v1
+  student_public_command_channels: []
+  student_proprio_raw_force_dim: 0
+  student_tactile_history_len: 10
+  student_tactile_frame_dim: 595
+  student_tactile_total_nodes: 115
+  finger_action_dim: 21
+  xy_action_dim: 2
+  xy_stage_joint_names:
+  - stage_x_joint
+  - stage_y_joint
+  xy_stage_world_axes:
+  - X
+  - 'Y'
+  xy_joint_limit_m: 0.05
+  xy_workspace_m:
+  - 0.01
+  - 0.05
+  xy_action_scale_m:
+  - 0.002
+  - 0.005
+  xy_effort_limit_n: 120.0
+  xy_velocity_limit_mps: 0.15
+  xy_acceleration_limit_mps2: 8.0
+  xy_pgain: 8000.0
+  xy_dgain: 200.0
+  xy_curriculum_ramp_steps: 20000000
+  follower_obs_dim: 159
+  high_speed_reward_enable: false

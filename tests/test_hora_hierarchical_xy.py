@@ -60,6 +60,7 @@ FRAME813_YAML = AGENT_DIR / "valvedriver_tactile_frame813.yaml"
 XY_ENV_PATH = SCREW_DIR / "revo3_hand_screw_tactile_xy_env.py"
 XY_ENV_CFG_PATH = SCREW_DIR / "revo3_hand_screw_tactile_xy_env_cfg.py"
 TRAIN_PATH = REPO_ROOT / "scripts/hora/train.py"
+PLAY_PATH = REPO_ROOT / "scripts/hora/play.py"
 
 
 def _load_module(path: Path, name: str):
@@ -1368,6 +1369,126 @@ def test_train_entry_point_exposes_the_hierarchical_task_algo_and_flag():
     assert {"PPO", "ProprioAdapt"}.issubset(set(algo_choices))
     assert {"valvedriver_tactile", "valvedriver"}.issubset(set(task_choices))
     assert "'HierarchicalPPO': HierarchicalPPO" in source
+
+
+def test_play_entry_point_exposes_the_hierarchical_xy_task():
+    source = PLAY_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    task_choices = None
+    algo_choices = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "add_argument":
+            continue
+        name = ast.literal_eval(node.args[0])
+        choices = next((kw.value for kw in node.keywords if kw.arg == "choices"), None)
+        if name == "--task" and choices is not None:
+            task_choices = tuple(ast.literal_eval(choices))
+        if name == "--algo" and choices is not None:
+            algo_choices = tuple(ast.literal_eval(choices))
+    assert "valvedriver_tactile_xy" in task_choices
+    assert {"auto", "HierarchicalPPO"}.issubset(set(algo_choices))
+    # The XY task must reach its own env class and config, not the flat one.
+    assert "'valvedriver_tactile_xy': Revo3HandVavleDriverTactileXYEnvCfg" in source
+    assert "'valvedriver_tactile_xy': Revo3HandScrewTactileXYEnv" in source
+    # The legacy actor frame holds finger joints only, never the two XY channels.
+    assert "getattr(env_cfg, 'finger_action_space', env_cfg.action_space)" in source
+
+
+def test_play_resolves_the_hierarchical_algo_from_the_task():
+    args = SimpleNamespace(task="valvedriver_tactile_xy", algo="auto", checkpoint="hier_nn/best.pth")
+    resolve = _compile_function(
+        PLAY_PATH,
+        "_resolve_algo",
+        {
+            "args": args,
+            # The task tuple was renamed when the yaw variants were added; the
+            # XY task's own resolution behaviour is unchanged.
+            "_HIERARCHICAL_SCREW_TASKS": ("valvedriver_tactile_xy",),
+            "_is_stage2_checkpoint": lambda path: path.endswith(".ckpt"),
+        },
+    )
+    assert resolve() == "HierarchicalPPO"
+    args.algo = "HierarchicalPPO"
+    assert resolve() == "HierarchicalPPO"
+
+    # A hierarchical checkpoint cannot be replayed as a flat Stage1 teacher.
+    args.algo = "PPO"
+    with pytest.raises(ValueError, match="requires"):
+        resolve()
+
+    # ... and the flat tasks keep their original auto-detection.
+    args.task, args.algo = "valvedriver_tactile", "auto"
+    assert resolve() == "PPO"
+    args.checkpoint = "stage2_nn/model_best.ckpt"
+    assert resolve() == "ProprioAdapt"
+    args.algo = "HierarchicalPPO"
+    with pytest.raises(ValueError, match="end-effector stage task"):
+        resolve()
+
+
+def test_play_hierarchical_action_matches_the_trainer_call_chain(tmp_path):
+    """The play helper must reproduce ``HierarchicalPPO.test`` exactly."""
+    agent, env = _make_agent(tmp_path)
+    agent.set_eval()
+    hierarchical_action = _compile_function(
+        PLAY_PATH,
+        "_hierarchical_action",
+        {
+            "torch": torch,
+            "validate_tactile_latent": validate_tactile_latent,
+            "follower_obs_from_env": follower_obs_from_env,
+        },
+    )
+
+    obs_dict = env.reset()
+    # Stage 0 parks the stage: the follower contributes exactly nothing.
+    assert agent.current_stage == STAGE_MASTER
+    action, executed_xy = hierarchical_action(agent, obs_dict)
+    assert action.shape == (env.num_envs, ENV_ACTION_DIM)
+    assert torch.equal(executed_xy, torch.zeros_like(executed_xy))
+    assert torch.equal(action[:, MASTER_ACTION_DIM:], executed_xy)
+
+    expected_hand, _latent = agent.master.act_inference_with_latent(
+        {
+            "obs": agent.master_running_mean_std(obs_dict["obs"]),
+            "priv_info": obs_dict["priv_info"],
+            "tactile_hist": obs_dict["tactile_hist"],
+        }
+    )
+    assert torch.allclose(
+        action[:, :MASTER_ACTION_DIM], torch.clamp(expected_hand, -1.0, 1.0)
+    )
+
+    # From Stage 1 the follower drives the stage inside the action bounds.
+    agent.current_stage = STAGE_FOLLOWER
+    action, executed_xy = hierarchical_action(agent, obs_dict)
+    assert action.shape == (env.num_envs, ENV_ACTION_DIM)
+    assert executed_xy.abs().max().item() <= 1.0
+    assert not torch.equal(executed_xy, torch.zeros_like(executed_xy))
+    # The env never sees a second step for the two policy halves.
+    assert env.step_count == 0
+
+
+def test_play_xy_statistics_report_physical_units():
+    samples = _compile_function(PLAY_PATH, "_xy_stage_samples", {"torch": torch})
+    env_cfg = SimpleNamespace(xy_position_obs_scale=0.05, xy_velocity_obs_scale=0.15)
+    obs_dict = {
+        # Normalized by the fixed 50 mm asset limit -> 20 mm of travel on X.
+        "xy_position": torch.tensor([[0.4, 0.0]]),
+        "xy_velocity": torch.tensor([[0.0, 1.0]]),
+        "xy_target": torch.tensor([[0.5, 0.0]]),
+        "xy_workspace_margin": torch.tensor([[0.8, 0.3]]),
+    }
+    result = samples(obs_dict, torch.tensor([[1.0, 0.2]]), env_cfg)
+    assert result["offset_mm"] == pytest.approx(20.0)
+    assert result["speed_mm_s"] == pytest.approx(150.0)
+    assert result["tracking_error_mm"] == pytest.approx(5.0)
+    # The reported margin is the worst axis, not the average of both.
+    assert result["workspace_margin"] == pytest.approx(0.3)
+    assert result["action_abs"] == pytest.approx(0.6)
+    assert result["action_saturation"] == pytest.approx(0.5)
 
 
 def test_xy_env_cfg_validates_the_stage_contract():

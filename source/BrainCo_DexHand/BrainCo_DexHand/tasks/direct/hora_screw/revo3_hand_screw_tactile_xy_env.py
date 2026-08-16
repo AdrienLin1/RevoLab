@@ -66,10 +66,14 @@ class Revo3HandScrewTactileXYEnv(Revo3HandScrewTactileEnv):
         self.xy_dof_index_tensor = torch.tensor(
             self.xy_dof_indices, dtype=torch.long, device=self.device
         )
-        if self.num_robot_dofs != self.num_finger_dofs + NUM_XY_DOFS:
+        # Variants that add further stage DOFs (e.g. the world-Z yaw joint)
+        # report them through ``_num_extra_action_dofs``; for this task the hook
+        # returns exactly ``NUM_XY_DOFS``.
+        num_stage_dofs = self._num_extra_action_dofs()
+        if self.num_robot_dofs != self.num_finger_dofs + num_stage_dofs:
             raise RuntimeError(
-                f"Expected {self.num_finger_dofs} finger DOFs + {NUM_XY_DOFS} stage DOFs "
-                f"= {self.num_finger_dofs + NUM_XY_DOFS} robot DOFs, got {self.num_robot_dofs}. "
+                f"Expected {self.num_finger_dofs} finger DOFs + {num_stage_dofs} stage DOFs "
+                f"= {self.num_finger_dofs + num_stage_dofs} robot DOFs, got {self.num_robot_dofs}. "
                 f"Articulation joints: {self.hand.joint_names}"
             )
         overlap = set(self.xy_dof_indices) & set(self.finger_dof_indices)

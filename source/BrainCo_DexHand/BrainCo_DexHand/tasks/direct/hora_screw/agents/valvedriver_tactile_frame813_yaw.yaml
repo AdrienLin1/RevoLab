@@ -1,0 +1,128 @@
+# Hierarchical Stage-1 teacher (21-D hand master) + 1-D yaw-only follower.
+#
+#   python scripts/hora/train.py --task valvedriver_tactile_yaw \
+#       --algo HierarchicalPPO --train_cfg valvedriver_tactile_frame813_yaw
+#
+# Ablation of valvedriver_tactile_frame813_xyyaw: identical master, identical
+# curriculum, identical yaw physics, but no translation authority at all.
+#
+# Action layout: [0:21] fingers, [21:22] yaw about world Z.
+
+algo: HierarchicalPPO
+tactile_layout: estimated_official
+
+network:
+  mlp:
+    units: [512, 256, 128]
+
+  # Retained for checkpoint-compatible legacy tactile_encoder.type=mlp configs.
+  # The finger_attention_gru teacher does not instantiate or use priv_mlp.
+  priv_mlp:
+    units: [256, 128, 32]
+
+  tactile_encoder:
+    type: finger_attention_gru
+    node_channels: [u, v, b, d, Fn, Ft1, Ft2]
+    node_input_dim: 7
+    node_source_channels: [0, 3, 5, 6, 7]
+    teacher_node_frame_channels: 10
+    finger_context_channels: 4
+    finger_token_dim: 32
+    finger_mlp_hidden_dim: 64
+    attention_heads: 4
+    attention_ff_dim: 64
+    # The follower consumes exactly this GRU hidden state (128 dims).
+    gru_hidden_dim: 128
+    gru_num_layers: 1
+    gru_bidirectional: false
+    history_len: 10
+
+  # Stage-2 student behavior and checkpoint format remain unchanged.
+  student_tactile_encoder:
+    type: conv1d
+    gated_fusion: false
+    distill_dim: 32
+    output_dim: 128
+
+load_path: ''
+master_load_path: ''
+
+# ---- master PPO (21-D hand policy) ----
+ppo:
+  output_name: 'debug'
+  normalize_input: True
+  normalize_value: True
+  value_bootstrap: True
+  num_actors: 16384
+  normalize_advantage: True
+  separate_coord_advantage: False
+  reward_scale: 1.0
+  gamma: 0.99
+  tau: 0.95
+  learning_rate: 1e-3
+  kl_threshold: 0.01
+  horizon_length: 8
+  minibatch_size: 4096
+  mini_epochs: 5
+  clip_value: True
+  critic_coef: 4
+  entropy_coef: 0.0
+  e_clip: 0.2
+  bounds_loss_coef: 0.0001
+  truncate_grads: True
+  grad_norm: 1.0
+  save_best_after: 0
+  save_frequency: 500
+  max_agent_steps: 1000000000
+  priv_info: True
+  # Five-finger valve placeholder (11 base + 1170 tactile). Runtime syncs this
+  # to the task-resolved value before saving.
+  priv_info_dim: 1181
+  priv_info_embed_dim: 32
+  proprio_adapt: False
+  tactile_distill_coef: 0.0
+
+# ---- follower PPO (1-D yaw policy) ----
+# The actor input is the strict 154-dim follower observation:
+#   21 executed hand action + 128 master GRU tactile latent
+#   + 1 stage_position + 1 stage_velocity + 1 stage_target
+#   + 1 previous_stage_action + 1 stage_workspace_margin
+follower:
+  actor_units: [256, 128, 64]
+  critic_units: [256, 128, 64]
+  # Centralized critic only: the first 11 base privileged channels. They never
+  # reach the follower actor.
+  critic_priv_dim: 11
+  init_log_sigma: -1.0
+  learning_rate: 3e-4
+  kl_threshold: 0.016
+  mini_epochs: 5
+  minibatch_size: 8192
+  e_clip: 0.2
+  critic_coef: 2.0
+  entropy_coef: 0.005
+  bounds_loss_coef: 0.0001
+  truncate_grads: True
+  grad_norm: 1.0
+  weight_decay: 0.0
+  normalize_input: True
+  normalize_value: True
+
+# ---- global latched curriculum ----
+hierarchical:
+  # Stage 0 -> Stage 1 gate on the EMA of the per-rollout signed mean angular
+  # velocity. This threshold is ONLY a curriculum trigger, never a reward gate.
+  # Only the yaw DOF exists in this ablation.
+  activation_speed_threshold: 0.8
+  activation_patience: 5
+  activation_speed_ema_beta: 0.9
+  # Stage 1 -> Stage 2. Enabled here: after `follower_only_steps` the 21-D
+  # master and the 1-D follower are fine-tuned jointly in the same rollout.
+  joint_finetune_enable: true
+  follower_only_steps: 50000000
+  master_finetune_lr_scale: 0.07
+  master_kl_coef: 1.0
+  freeze_tactile_encoder_in_joint_finetune: true
+  # Shared workspace / action-scale ramp, measured from the Stage-1 activation
+  # step. The same ramp length is used as in the XY+yaw task.
+  xy_curriculum_ramp_steps: 20000000

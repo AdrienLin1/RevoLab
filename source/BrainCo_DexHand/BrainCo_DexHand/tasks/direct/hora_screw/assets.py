@@ -26,6 +26,11 @@ from .xy_stage import (
     XY_STAGE_ACTUATOR_GROUP,
     XY_STAGE_JOINT_NAMES,
 )
+from .yaw_stage import (
+    YAW_STAGE_ACTUATOR_EXPR,
+    YAW_STAGE_ACTUATOR_GROUP,
+    YAW_STAGE_JOINT_NAME,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[6]
 _REVO3_USD = str(_REPO_ROOT / "assets" / "usd" / "revo3_right.usd")
@@ -204,6 +209,71 @@ def make_xy_stage_hand_cfg(
         )
     actuators[XY_STAGE_ACTUATOR_GROUP] = ImplicitActuatorCfg(
         joint_names_expr=[XY_STAGE_ACTUATOR_EXPR],
+        effort_limit_sim=float(effort_limit),
+        velocity_limit_sim=float(velocity_limit),
+        stiffness=0.0,
+        damping=0.0,
+        friction=float(friction),
+        armature=float(armature),
+    )
+    return base_cfg.replace(
+        init_state=base_cfg.init_state.replace(joint_pos=joint_pos),
+        actuators=actuators,
+    )
+
+
+def make_yaw_stage_hand_cfg(
+    base_cfg: ArticulationCfg,
+    *,
+    joint_limit: float,
+    effort_limit: float,
+    velocity_limit: float,
+    armature: float = 0.0,
+    friction: float = 0.0,
+) -> ArticulationCfg:
+    """Return a hand config that also owns the world-Z yaw stage joint.
+
+    The yaw joint itself is authored into the articulation at scene-setup time
+    (see ``Revo3HandYawStageMixin._author_yaw_stage_joint``); this config only
+    adds the matching actuator group and its zero reset pose.
+
+    The yaw actuator is a **separate** group matched by the exact expression
+    ``stage_yaw_joint``. It must never share the XY group: the XY group carries
+    a 120 N *linear* effort limit while yaw carries a sub-newton-metre *torque*
+    limit, and mixing them would hand yaw an effectively unbounded drive. The
+    XY group's pattern is correspondingly exact (``stage_[xy]_joint``).
+
+    Like the fingers it runs with zero implicit PD stiffness and damping: the
+    environment applies explicit, effort-limited PD torques, and
+    ``effort_limit_sim`` enforces the same bound inside PhysX.
+
+    Args:
+        base_cfg: Hand configuration without the yaw joint.
+        joint_limit: Revolute hard limit (radians) used for validation only.
+        effort_limit: Maximum yaw actuator torque, N*m.
+        velocity_limit: Maximum yaw joint velocity, rad/s.
+        armature: Extra reflected inertia on the yaw joint, kg*m^2.
+        friction: Yaw joint friction torque, N*m.
+
+    Returns:
+        A new ``ArticulationCfg`` with the yaw actuator and reset pose.
+    """
+    if joint_limit <= 0.0:
+        raise ValueError(f"Yaw stage joint_limit must be positive, got {joint_limit}")
+    if effort_limit <= 0.0:
+        raise ValueError(f"Yaw stage effort_limit must be positive, got {effort_limit}")
+    if velocity_limit <= 0.0:
+        raise ValueError(f"Yaw stage velocity_limit must be positive, got {velocity_limit}")
+
+    joint_pos = dict(base_cfg.init_state.joint_pos)
+    joint_pos[YAW_STAGE_JOINT_NAME] = 0.0
+    actuators = dict(base_cfg.actuators)
+    if YAW_STAGE_ACTUATOR_GROUP in actuators:
+        raise ValueError(
+            f"Actuator group {YAW_STAGE_ACTUATOR_GROUP!r} already exists on the base hand"
+        )
+    actuators[YAW_STAGE_ACTUATOR_GROUP] = ImplicitActuatorCfg(
+        joint_names_expr=[YAW_STAGE_ACTUATOR_EXPR],
         effort_limit_sim=float(effort_limit),
         velocity_limit_sim=float(velocity_limit),
         stiffness=0.0,

@@ -132,13 +132,22 @@ class Revo3HandScrewTactileXYMixinCfg:
         super().__post_init__()
         self._configure_xy_stage()
 
+    def _stage_action_space(self) -> int:
+        """Return the number of trailing stage action channels of this task.
+
+        The XY task commands two; variants that add further end-effector DOFs
+        (e.g. the world-Z yaw joint) override this so the shared action-space
+        check below stays correct for every stage layout.
+        """
+        return NUM_XY_DOFS
+
     def _configure_xy_stage(self):
         """Validate the stage contract and attach the stage actuator group."""
-        expected_action_space = int(self.finger_action_space) + NUM_XY_DOFS
+        expected_action_space = int(self.finger_action_space) + self._stage_action_space()
         if int(self.action_space) != expected_action_space:
             raise ValueError(
                 f"action_space ({self.action_space}) must equal finger_action_space "
-                f"({self.finger_action_space}) + {NUM_XY_DOFS} XY channels"
+                f"({self.finger_action_space}) + {self._stage_action_space()} stage channels"
             )
         limits = validate_xy_stage_config(self)
         validate_high_speed_reward_config(self)

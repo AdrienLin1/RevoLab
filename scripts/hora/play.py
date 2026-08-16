@@ -12,7 +12,13 @@ Quick Start:
 Full Command:
     python scripts/hora/play.py --task valvedriver_tactile --checkpoint CHECKPOINT --train_cfg Revo3HandScrewTactile --num_envs 16
 
+Hierarchical (end-effector stage; XY, XY+yaw or yaw-only):
+    python scripts/hora/play.py --task valvedriver_tactile_xy --checkpoint HIER_NN/best_speed.pth --num_envs 16
+    python scripts/hora/play.py --task valvedriver_tactile_xyyaw --checkpoint HIER_NN/best_speed.pth --num_envs 16
+    python scripts/hora/play.py --task valvedriver_tactile_yaw --checkpoint HIER_NN/best_speed.pth --num_envs 16
+
 Options:
+    --algo: Policy family; ``auto`` infers it from the task and checkpoint.
     --tactile_layout: Match the layout used to train the checkpoint.
     --visualize_tactile: Write and optionally display tactile frames.
     --tactile_gui_vis: Display tactile sensor markers in the Isaac viewer.
@@ -52,9 +58,17 @@ parser.add_argument('--task', type=str, default='nutbolt',
                              'valvedriver', 'valvedriver_25', 'valvedriver_40', 'vavledriver',
                              'nutbolt_tactile', 'screwdriver_tactile',
                              'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
-                             'vavledriver_tactile'])
+                             'vavledriver_tactile',
+                             'valvedriver_tactile_xy',
+                             'valvedriver_tactile_xyyaw',
+                             'valvedriver_tactile_yaw'])
+parser.add_argument('--algo', type=str, default='auto',
+                    choices=['auto', 'PPO', 'ProprioAdapt', 'HierarchicalPPO'],
+                    help='Policy family owning the checkpoint (default: auto, inferred from '
+                         'the task and the checkpoint path).')
 parser.add_argument('--checkpoint', type=str, required=True,
-                    help='Stage1 .pth from stage1_nn/ or Stage2 .ckpt from stage2_nn/.')
+                    help='Stage1 .pth from stage1_nn/, Stage2 .ckpt from stage2_nn/, or a '
+                         'hierarchical .pth from hier_nn/.')
 parser.add_argument('--train_cfg', type=str, default='',
                     help='Train yaml name (default: Revo3HandHora for ball/cylinder, '
                          'Revo3HandScrew for screw/valve tasks).')
@@ -109,11 +123,22 @@ if args.tactile_noise_std < 0.0:
 if not 0.0 <= args.tactile_binary_flip_prob <= 1.0:
     parser.error('--tactile_binary_flip_prob must be in [0, 1]')
 
+# Tasks whose hand additionally rides on a physical end-effector stage and are
+# therefore played back by the master/follower HierarchicalPPO agent.
+_XY_SCREW_TASKS = ('valvedriver_tactile_xy',)
+_XYYAW_SCREW_TASKS = ('valvedriver_tactile_xyyaw',)
+_YAW_SCREW_TASKS = ('valvedriver_tactile_yaw',)
+_HIERARCHICAL_SCREW_TASKS = _XY_SCREW_TASKS + _XYYAW_SCREW_TASKS + _YAW_SCREW_TASKS
+_HIERARCHICAL_TRAIN_CFG = {
+    'valvedriver_tactile_xy': 'valvedriver_tactile_frame813_xy',
+    'valvedriver_tactile_xyyaw': 'valvedriver_tactile_frame813_xyyaw',
+    'valvedriver_tactile_yaw': 'valvedriver_tactile_frame813_yaw',
+}
 _TACTILE_SCREW_TASKS = (
     'nutbolt_tactile', 'screwdriver_tactile',
     'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
     'vavledriver_tactile',  # backward-compatible alias for the original typo
-)
+) + _HIERARCHICAL_SCREW_TASKS
 _TACTILE_ROTATE_TASKS = ('rotate_ball_tactile', 'rotate_cylinder_tactile')
 _TACTILE_TASKS = _TACTILE_SCREW_TASKS + _TACTILE_ROTATE_TASKS
 _NON_TACTILE_SCREW_TASKS = (
@@ -123,7 +148,9 @@ _NON_TACTILE_SCREW_TASKS = (
 )
 _SCREW_TASKS = _NON_TACTILE_SCREW_TASKS + _TACTILE_SCREW_TASKS
 if not args.train_cfg:
-    if args.task in _TACTILE_ROTATE_TASKS:
+    if args.task in _HIERARCHICAL_SCREW_TASKS:
+        args.train_cfg = _HIERARCHICAL_TRAIN_CFG[args.task]
+    elif args.task in _TACTILE_ROTATE_TASKS:
         args.train_cfg = 'Revo3HandTactileRotate'
     elif args.task in _TACTILE_SCREW_TASKS:
         args.train_cfg = 'Revo3HandScrewTactile'
@@ -145,6 +172,47 @@ def _is_stage2_checkpoint(path: str) -> bool:
     return path.endswith('.ckpt') or 'stage2_nn' in path
 
 
+def _resolve_algo() -> str:
+    """Return the policy family that owns the requested checkpoint.
+
+    An end-effector stage task and ``HierarchicalPPO`` imply each other, exactly
+    as in ``train.py``: the environment exposes a wider-than-21 action space
+    that only a master/follower pair can fill.
+
+    Returns:
+        One of ``PPO``, ``ProprioAdapt`` or ``HierarchicalPPO``.
+
+    Raises:
+        ValueError: If an explicit ``--algo`` contradicts the task.
+    """
+    if args.task in _HIERARCHICAL_SCREW_TASKS:
+        inferred = 'HierarchicalPPO'
+    elif _is_stage2_checkpoint(args.checkpoint):
+        inferred = 'ProprioAdapt'
+    else:
+        inferred = 'PPO'
+    if args.algo == 'auto':
+        return inferred
+    if args.algo == 'HierarchicalPPO' and args.task not in _HIERARCHICAL_SCREW_TASKS:
+        raise ValueError(
+            f'--algo HierarchicalPPO requires an end-effector stage task '
+            f'{_HIERARCHICAL_SCREW_TASKS}, got {args.task!r}.'
+        )
+    if args.task in _HIERARCHICAL_SCREW_TASKS and args.algo != 'HierarchicalPPO':
+        raise ValueError(
+            f'Task {args.task!r} has a wider-than-21 action space (21 hand joints '
+            'plus its end-effector stage DOFs) and requires --algo HierarchicalPPO.'
+        )
+    if args.algo != inferred:
+        raise ValueError(
+            f'--algo {args.algo} contradicts the checkpoint: {args.checkpoint!r} '
+            f'looks like a {inferred} checkpoint.'
+        )
+    return inferred
+
+
+args.algo = _resolve_algo()
+
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
@@ -152,6 +220,8 @@ import torch
 from omegaconf import OmegaConf
 
 from BrainCo_DexHand.algo.hora.ppo.ppo import PPO
+from BrainCo_DexHand.algo.hora.ppo.hierarchical_ppo import STAGE_NAMES, HierarchicalPPO
+from BrainCo_DexHand.algo.hora.ppo.hierarchical_obs import validate_tactile_latent
 from BrainCo_DexHand.algo.hora.padapt.padapt import ProprioAdapt
 from BrainCo_DexHand.algo.hora.padapt.tactile_dagger import TactileDAgger
 from BrainCo_DexHand.tasks.tactile_layout import (
@@ -190,6 +260,24 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_env_cfg im
     Revo3HandValveDriver40TactileEnvCfg,
     Revo3HandVavleDriverTactileEnvCfg,
 )
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy_env import (
+    Revo3HandScrewTactileXYEnv,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy_env_cfg import (
+    Revo3HandVavleDriverTactileXYEnvCfg,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xyyaw_env import (
+    Revo3HandScrewTactileXYYawEnv,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xyyaw_env_cfg import (
+    Revo3HandVavleDriverTactileXYYawEnvCfg,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_yaw_env import (
+    Revo3HandScrewTactileYawEnv,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_yaw_env_cfg import (
+    Revo3HandVavleDriverTactileYawEnvCfg,
+)
 
 _SCREW_ENV_CFG = {
     'nutbolt': Revo3HandScrewNutBoltEnvCfg,
@@ -204,6 +292,16 @@ _SCREW_ENV_CFG = {
     'valvedriver_tactile25': Revo3HandValveDriver25TactileEnvCfg,
     'valvedriver_tactile_40': Revo3HandValveDriver40TactileEnvCfg,
     'vavledriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
+    'valvedriver_tactile_xy': Revo3HandVavleDriverTactileXYEnvCfg,
+    'valvedriver_tactile_xyyaw': Revo3HandVavleDriverTactileXYYawEnvCfg,
+    'valvedriver_tactile_yaw': Revo3HandVavleDriverTactileYawEnvCfg,
+}
+
+# Environment class per hierarchical stage task.
+_HIERARCHICAL_ENV_CLASS = {
+    'valvedriver_tactile_xy': Revo3HandScrewTactileXYEnv,
+    'valvedriver_tactile_xyyaw': Revo3HandScrewTactileXYYawEnv,
+    'valvedriver_tactile_yaw': Revo3HandScrewTactileYawEnv,
 }
 
 _TACTILE_ROTATE_ENV_CFG = {
@@ -318,7 +416,7 @@ def _build_full_config(seed: int):
     else:
         args.tactile_layout = validate_tactile_layout_name(args.tactile_layout)
     print(f'[INFO] Tactile layout: {args.tactile_layout} (source: {layout_source})', flush=True)
-    train_cfg.algo = 'PPO'
+    train_cfg.algo = args.algo
     train_cfg.load_path = os.path.abspath(args.checkpoint)
     train_cfg.ppo.num_actors = args.num_envs
     train_cfg.ppo.priv_info = True
@@ -344,6 +442,143 @@ def _tactile_robustness_enabled() -> bool:
     )
 
 
+def _hierarchical_action(agent, obs_dict):
+    """Return the joint ``21 + D`` action of one hierarchical control cycle.
+
+    This mirrors ``HierarchicalPPO.test``: a single master forward yields both
+    the hand action and the tactile latent, the follower reads the strict
+    ``follower_obs_dim`` observation built from that same latent, and both
+    halves are concatenated into the one action the environment executes.
+
+    Args:
+        agent: Restored :class:`HierarchicalPPO` instance in eval mode.
+        obs_dict: Current environment observation dictionary.
+
+    Returns:
+        Tuple of the full ``(B, 21 + D)`` action and its ``(B, D)`` stage part,
+        where ``D`` is 2 for XY, 3 for XY+yaw and 1 for yaw only.
+    """
+    processed_obs = (
+        agent.master_running_mean_std(obs_dict['obs'])
+        if agent.normalize_input
+        else obs_dict['obs']
+    )
+    mu, tactile_latent = agent.master.act_inference_with_latent({
+        'obs': processed_obs,
+        'priv_info': obs_dict['priv_info'],
+        'tactile_hist': obs_dict['tactile_hist'],
+    })
+    executed_hand = torch.clamp(mu, -1.0, 1.0)
+    tactile_latent = validate_tactile_latent(tactile_latent).detach()
+    follower_obs = agent._follower_obs_from_env(
+        obs_dict,
+        executed_hand_action=executed_hand,
+        tactile_latent=tactile_latent,
+    )
+    if agent.follower_active:
+        follower_input = (
+            agent.follower_running_mean_std(follower_obs)
+            if agent.follower_normalize_input
+            else follower_obs
+        )
+        executed_stage = torch.clamp(
+            agent.follower.act_inference(follower_input), -1.0, 1.0
+        )
+    else:
+        # Stage 0 keeps every stage DOF mechanically parked at zero.
+        executed_stage = torch.zeros(
+            (follower_obs.shape[0], agent.follower_action_dim), device=agent.device
+        )
+    return torch.cat([executed_hand, executed_stage], dim=-1), executed_stage
+
+
+class _MeanTracker:
+    """Accumulate per-step scalars and report their running mean."""
+
+    def __init__(self):
+        self._sums: dict[str, float] = {}
+        self._count = 0
+
+    def update(self, values: dict) -> None:
+        """Add one sample per named scalar.
+
+        Args:
+            values: Mapping of metric name to a float-convertible scalar.
+        """
+        for name, value in values.items():
+            self._sums[name] = self._sums.get(name, 0.0) + float(value)
+        self._count += 1
+
+    @property
+    def count(self) -> int:
+        """Number of accumulated samples."""
+        return self._count
+
+    def means(self) -> dict[str, float]:
+        """Return the mean of every tracked scalar."""
+        if self._count == 0:
+            return {}
+        return {name: total / self._count for name, total in self._sums.items()}
+
+
+def _xy_stage_samples(obs_dict, executed_xy, env_cfg) -> dict:
+    """Return physical XY-stage metrics for the current control cycle.
+
+    The observation channels are normalized, so they are converted back to
+    millimetres using the fixed asset scales the environment normalized them by.
+
+    Args:
+        obs_dict: Environment observation containing the ``xy_*`` channels.
+        executed_xy: Clipped 2-D stage action about to be executed.
+        env_cfg: Environment configuration holding the observation scales.
+
+    Returns:
+        Mapping of metric name to a Python float.
+    """
+    position_mm = obs_dict['xy_position'] * float(env_cfg.xy_position_obs_scale) * 1000.0
+    velocity_mm_s = obs_dict['xy_velocity'] * float(env_cfg.xy_velocity_obs_scale) * 1000.0
+    target_mm = obs_dict['xy_target'] * float(env_cfg.xy_position_obs_scale) * 1000.0
+    return {
+        'offset_mm': position_mm.norm(dim=-1).mean().item(),
+        'speed_mm_s': velocity_mm_s.norm(dim=-1).mean().item(),
+        'tracking_error_mm': (target_mm - position_mm).norm(dim=-1).mean().item(),
+        # 1 at the workspace centre, 0 at the software boundary.
+        'workspace_margin': obs_dict['xy_workspace_margin'].min(dim=-1).values.mean().item(),
+        'action_abs': executed_xy.abs().mean().item(),
+        'action_saturation': (executed_xy.abs() > 0.99).float().mean().item(),
+    }
+
+
+def _yaw_stage_samples(obs_dict, executed_yaw, env_cfg) -> dict:
+    """Return physical yaw-stage metrics for the current control cycle.
+
+    The observation channels are normalized, so they are converted back to
+    **radians** (and degrees for readability) using the fixed asset scales the
+    environment normalized them by. Yaw is never reported in metres.
+
+    Args:
+        obs_dict: Environment observation containing the ``yaw_*`` channels.
+        executed_yaw: Clipped 1-D yaw action about to be executed.
+        env_cfg: Environment configuration holding the observation scales.
+
+    Returns:
+        Mapping of metric name to a Python float.
+    """
+    position_rad = obs_dict['yaw_position'] * float(env_cfg.yaw_position_obs_scale)
+    velocity_rad_s = obs_dict['yaw_velocity'] * float(env_cfg.yaw_velocity_obs_scale)
+    target_rad = obs_dict['yaw_target'] * float(env_cfg.yaw_position_obs_scale)
+    return {
+        'angle_rad': position_rad.abs().mean().item(),
+        'angle_deg': position_rad.abs().mean().item() * 180.0 / 3.141592653589793,
+        'rate_rad_s': velocity_rad_s.abs().mean().item(),
+        'tracking_error_rad': (target_rad - position_rad).abs().mean().item(),
+        # 1 at the workspace centre, 0 at the software boundary.
+        'workspace_margin': obs_dict['yaw_workspace_margin'].min(dim=-1).values.mean().item(),
+        'action_abs': executed_yaw.abs().mean().item(),
+        'action_saturation': (executed_yaw.abs() > 0.99).float().mean().item(),
+    }
+
+
 def main():
     """Run deterministic HORA playback and report robustness metrics."""
     set_np_formatting()
@@ -364,6 +599,8 @@ def main():
         env_cfg.enable_contact_in_obs = False
     if args.task in _TACTILE_ROTATE_TASKS:
         env_class = Revo3HandTactileRotateEnv
+    elif args.task in _HIERARCHICAL_SCREW_TASKS:
+        env_class = _HIERARCHICAL_ENV_CLASS[args.task]
     elif args.task in _TACTILE_SCREW_TASKS:
         env_class = Revo3HandScrewTactileEnv
     else:
@@ -395,7 +632,14 @@ def main():
     env = HoraCompatWrapper(env)
 
     # Policy containers write only to a throwaway directory during playback.
-    if _is_stage2_checkpoint(full_config.train.load_path):
+    if args.algo == 'HierarchicalPPO':
+        agent = HierarchicalPPO(
+            env,
+            tempfile.mkdtemp(prefix='hora_play_hier_'),
+            full_config=full_config,
+        )
+        policy_mode = 'hierarchical'
+    elif _is_stage2_checkpoint(full_config.train.load_path):
         if args.task in _TACTILE_TASKS:
             agent = TactileDAgger(
                 env,
@@ -417,6 +661,40 @@ def main():
     agent.set_eval()
     print(f'[INFO] Loaded {policy_mode} checkpoint: {full_config.train.load_path}', flush=True)
 
+    is_hierarchical = policy_mode == 'hierarchical'
+    has_xy_stage = args.task in _XY_SCREW_TASKS + _XYYAW_SCREW_TASKS
+    has_yaw_stage = args.task in _XYYAW_SCREW_TASKS + _YAW_SCREW_TASKS
+    if is_hierarchical:
+        # The checkpoint carries the latched curriculum stage and agent-step
+        # counter, so replaying it reproduces the workspace and action scale the
+        # follower was last trained under instead of restarting the ramp. One
+        # shared progress drives every stage DOF.
+        curriculum = agent._push_stage_curriculum()
+        progress = curriculum['stage_progress']
+        summary = [
+            f'[INFO] Hierarchical curriculum: {STAGE_NAMES[agent.current_stage]} '
+            f'({agent.follower_action_dim}-DOF follower '
+            f'{tuple(agent.stage_dof_names)}, active={agent.follower_active}) | '
+            f'agent_steps={agent.agent_steps} | ramp_progress={progress:.3f}'
+        ]
+        if 'xy_workspace' in curriculum:
+            summary.append(
+                f"xy_workspace={curriculum['xy_workspace'] * 1000.0:.1f} mm | "
+                f"xy_action_scale={curriculum['xy_action_scale'] * 1000.0:.2f} mm/unit"
+            )
+        if 'yaw_workspace' in curriculum:
+            summary.append(
+                f"yaw_workspace={curriculum['yaw_workspace']:.3f} rad | "
+                f"yaw_action_scale={curriculum['yaw_action_scale']:.4f} rad/unit"
+            )
+        print(' | '.join(summary), flush=True)
+        if not agent.follower_active:
+            print(
+                '[WARN] The checkpoint is still in stage0_master; every stage DOF stays '
+                'commanded to zero and every stage metric below will read zero.',
+                flush=True,
+            )
+
     is_screw = args.task in _SCREW_TASKS
     device = agent.device
     num_envs = env.num_envs
@@ -424,7 +702,9 @@ def main():
     if args.task in _TACTILE_TASKS:
         tactile_perturber = TactileObservationPerturber(
             layout=str(env_cfg.tactile_layout),
-            policy_mode=policy_mode,
+            # The hierarchical master reads the same teacher observation as a
+            # Stage1 teacher, so it takes the teacher perturbation contract.
+            policy_mode='stage1_teacher' if is_hierarchical else policy_mode,
             num_envs=num_envs,
             teacher_frame_dim=int(env_cfg.teacher_tactile_frame_dim),
             student_frame_dim=int(env_cfg.student_tactile_frame_dim),
@@ -437,7 +717,11 @@ def main():
             noise_std=float(args.tactile_noise_std),
             binary_flip_prob=float(args.tactile_binary_flip_prob),
             graph_force_limit=float(env_cfg.tactile_force_clip),
-            legacy_action_dim=int(env_cfg.action_space),
+            # The legacy actor frame holds finger joints only: the stage
+            # channels of a hierarchical task are not part of it.
+            legacy_action_dim=int(
+                getattr(env_cfg, 'finger_action_space', env_cfg.action_space)
+            ),
             legacy_frame_dim=int(env_cfg.observation_space // 3),
             active_finger_indices=tuple(env_cfg.tactile_active_finger_indices),
             device=device,
@@ -475,6 +759,13 @@ def main():
     angular_velocity_sum = 0.0
     angular_speed_sum = 0.0
     angular_velocity_samples = 0
+    # Stage statistics (hierarchical tasks only); XY and yaw are tracked and
+    # reported separately so metres and radians are never mixed.
+    xy_tracker = _MeanTracker()
+    yaw_tracker = _MeanTracker()
+    stage_cost_tracker = _MeanTracker()
+    xy_offset_max_mm = 0.0
+    yaw_angle_max_rad = 0.0
 
     obs_dict = env.reset()
     if tactile_perturber is not None:
@@ -486,7 +777,34 @@ def main():
             if is_screw:
                 nut_pos_before = env.nut_dof_pos.clone()
 
-            if policy_mode == 'tactile_student':
+            if is_hierarchical:
+                action, executed_stage = _hierarchical_action(agent, obs_dict)
+                # The stage action is [x, y, yaw] in the task's joint order, so
+                # the XY block is the leading 2 channels and yaw the last one.
+                if has_xy_stage:
+                    xy_tracker.update(
+                        _xy_stage_samples(obs_dict, executed_stage[:, :2], env_cfg)
+                    )
+                    xy_offset_max_mm = max(
+                        xy_offset_max_mm,
+                        (
+                            obs_dict['xy_position']
+                            * float(env_cfg.xy_position_obs_scale)
+                            * 1000.0
+                        ).norm(dim=-1).max().item(),
+                    )
+                if has_yaw_stage:
+                    yaw_tracker.update(
+                        _yaw_stage_samples(obs_dict, executed_stage[:, -1:], env_cfg)
+                    )
+                    yaw_angle_max_rad = max(
+                        yaw_angle_max_rad,
+                        (
+                            obs_dict['yaw_position']
+                            * float(env_cfg.yaw_position_obs_scale)
+                        ).abs().max().item(),
+                    )
+            elif policy_mode == 'tactile_student':
                 proprio_hist = agent.proprio_mean_std(obs_dict['student_proprio_hist'])
                 mu = agent.student(proprio_hist, obs_dict['student_tactile_hist'])
             elif policy_mode == 'proprio_student':
@@ -503,8 +821,22 @@ def main():
                 if 'tactile_hist' in obs_dict:
                     input_dict['tactile_hist'] = obs_dict['tactile_hist']
                 mu = agent.model.act_inference(input_dict)
-            mu = torch.clamp(mu, -1.0, 1.0)
-            obs_dict, rewards, dones, infos = env.step(mu)
+            if not is_hierarchical:
+                action = torch.clamp(mu, -1.0, 1.0)
+            obs_dict, rewards, dones, infos = env.step(action)
+            if is_hierarchical:
+                # The environment already reduces its stage diagnostics to one
+                # scalar per key, so they are averaged over steps as they arrive.
+                stage_cost_tracker.update({
+                    key: value.item()
+                    for key, value in infos.items()
+                    if isinstance(key, str)
+                    and key.startswith(
+                        ('xy/', 'xy_penalty/', 'yaw/', 'yaw_penalty/', 'curriculum/')
+                    )
+                    and isinstance(value, torch.Tensor)
+                    and value.numel() == 1
+                })
             angular_velocity = infos.get('metrics/angular_velocity_per_env')
             if not isinstance(angular_velocity, torch.Tensor):
                 if is_screw:
@@ -558,6 +890,22 @@ def main():
                     line += f' | live nut vel {env.nut_dof_vel_cf.mean().item():+.3f} rad/s'
                 if angular_velocity_samples > 0:
                     line += f' | mean ang vel {angular_velocity_sum / angular_velocity_samples:+.3f} rad/s'
+                if is_hierarchical and xy_tracker.count > 0:
+                    xy_means = xy_tracker.means()
+                    line += (
+                        f' | xy offset {xy_means["offset_mm"]:5.2f} mm'
+                        f' (max {xy_offset_max_mm:5.2f})'
+                        f' | xy speed {xy_means["speed_mm_s"]:6.2f} mm/s'
+                        f' | margin {xy_means["workspace_margin"]:4.2f}'
+                    )
+                if is_hierarchical and yaw_tracker.count > 0:
+                    yaw_means = yaw_tracker.means()
+                    line += (
+                        f' | yaw {yaw_means["angle_rad"]:+.4f} rad'
+                        f' (max {yaw_angle_max_rad:.4f})'
+                        f' | yaw rate {yaw_means["rate_rad_s"]:+.3f} rad/s'
+                        f' | margin {yaw_means["workspace_margin"]:4.2f}'
+                    )
                 print(line, flush=True)
     except KeyboardInterrupt:
         print('\n[INFO] Interrupted by user.', flush=True)
@@ -581,6 +929,43 @@ def main():
             f'| mean angular speed {angular_speed_sum / angular_velocity_samples:.3f} rad/s',
             flush=True,
         )
+
+    if is_hierarchical and xy_tracker.count > 0:
+        xy_means = xy_tracker.means()
+        print(
+            f'[XY SUMMARY] {xy_tracker.count} control steps | '
+            f'stage {STAGE_NAMES[agent.current_stage]} | '
+            f'mean offset {xy_means["offset_mm"]:.2f} mm (max {xy_offset_max_mm:.2f} mm) | '
+            f'mean speed {xy_means["speed_mm_s"]:.2f} mm/s | '
+            f'mean target tracking error {xy_means["tracking_error_mm"]:.3f} mm | '
+            f'mean workspace margin {xy_means["workspace_margin"]:.3f} '
+            '(1 = centre, 0 = boundary) | '
+            f'mean |action| {xy_means["action_abs"]:.3f} | '
+            f'action saturation {xy_means["action_saturation"]:.2%}',
+            flush=True,
+        )
+    if is_hierarchical and yaw_tracker.count > 0:
+        yaw_means = yaw_tracker.means()
+        print(
+            f'[YAW SUMMARY] {yaw_tracker.count} control steps | '
+            f'stage {STAGE_NAMES[agent.current_stage]} | '
+            f'mean |angle| {yaw_means["angle_rad"]:.4f} rad '
+            f'({yaw_means["angle_deg"]:.2f} deg, max {yaw_angle_max_rad:.4f} rad) | '
+            f'mean |rate| {yaw_means["rate_rad_s"]:.4f} rad/s | '
+            f'mean target tracking error {yaw_means["tracking_error_rad"]:.5f} rad | '
+            f'mean workspace margin {yaw_means["workspace_margin"]:.3f} '
+            '(1 = centre, 0 = boundary) | '
+            f'mean |action| {yaw_means["action_abs"]:.3f} | '
+            f'action saturation {yaw_means["action_saturation"]:.2%}',
+            flush=True,
+        )
+    if is_hierarchical:
+        cost_means = stage_cost_tracker.means()
+        if cost_means:
+            detail = ' | '.join(
+                f'{name} {value:+.4f}' for name, value in sorted(cost_means.items())
+            )
+            print(f'[STAGE DIAGNOSTICS] {detail}', flush=True)
 
 
 if __name__ == '__main__':

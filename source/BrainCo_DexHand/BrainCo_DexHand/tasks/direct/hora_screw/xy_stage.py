@@ -34,7 +34,11 @@ import torch
 XY_STAGE_JOINT_NAMES: tuple[str, str] = ("stage_x_joint", "stage_y_joint")
 XY_STAGE_CARRIAGE_BODY_NAME: str = "stage_x_carriage"
 XY_STAGE_ACTUATOR_GROUP: str = "xy_stage"
-XY_STAGE_ACTUATOR_EXPR: str = "stage_.*_joint"
+# Exact two-joint pattern. It must NOT be a wildcard such as ``stage_.*_joint``:
+# the XY+yaw task adds ``stage_yaw_joint``, which would otherwise silently
+# inherit the XY group's 120 N linear effort limit instead of its own torque
+# limit. The two groups stay completely independent.
+XY_STAGE_ACTUATOR_EXPR: str = "stage_[xy]_joint"
 # World axes driven by the two joints, in the same order as the joint names.
 XY_STAGE_WORLD_AXES: tuple[str, str] = ("X", "Y")
 

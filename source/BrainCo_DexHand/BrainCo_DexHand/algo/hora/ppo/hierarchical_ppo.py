@@ -3,18 +3,28 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Hierarchical PPO: a 21-D dexterous-hand master and a 2-D translation follower.
+"""Hierarchical PPO: a 21-D dexterous-hand master and an end-effector follower.
 
 Both policies decide from the **same** environment state ``s_t`` and the joint
-23-D action is executed by a single ``env.step`` per control cycle::
+``21 + D`` action is executed by a single ``env.step`` per control cycle::
 
     master_result   = master.act(obs_t)                       # 21-D hand
     executed_hand   = clamp(master_result["actions"], -1, 1)
     tactile_latent  = master_result["tactile_latent"].detach() # [B, 128] GRU state
-    follower_obs    = build_follower_obs(executed_hand, tactile_latent, xy_state_t)
-    follower_result = follower.act(follower_obs)               # 2-D translation
-    executed_xy     = clamp(follower_result["actions"], -1, 1)
-    obs_{t+1}, r, done, info = env.step(cat([executed_hand, executed_xy]))
+    follower_obs    = build_follower_obs(executed_hand, tactile_latent, stage_t)
+    follower_result = follower.act(follower_obs)               # D-D stage
+    executed_stage  = clamp(follower_result["actions"], -1, 1)
+    obs_{t+1}, r, done, info = env.step(cat([executed_hand, executed_stage]))
+
+The follower width ``D`` is a property of the task, not of the trainer:
+
+======  ===================================  =====================  ==========
+``D``   stage joints (fixed action order)    follower observation   env action
+======  ===================================  =====================  ==========
+1       ``stage_yaw_joint``                  154                    22
+2       ``stage_x_joint``, ``stage_y_joint`` 159                    23
+3       ``stage_x/y/yaw_joint``              164                    24
+======  ===================================  =====================  ==========
 
 No physics step, render or sensor refresh happens between the two policy
 forwards, and the tactile encoder runs exactly once per cycle.
@@ -28,13 +38,16 @@ input normalizers, optimizers, learning rates and PPO ratios::
 Curriculum (global, latched, fully checkpointed):
 
 * **Stage 0** - master-only. The follower neither samples nor updates and the
-  XY action is exactly ``[0, 0]``; the stage stays at zero under the same
-  physical actuator. Once the EMA of the per-rollout signed mean angular
-  velocity is strictly above ``activation_speed_threshold`` (0.8 rad/s) for
-  ``activation_patience`` consecutive epochs, Stage 1 latches on permanently.
+  stage action is exactly zero on **every** stage DOF; the stage stays at zero
+  under the same physical actuators. Once the EMA of the per-rollout signed
+  mean angular velocity is strictly above ``activation_speed_threshold``
+  (0.8 rad/s) for ``activation_patience`` consecutive epochs, Stage 1 latches
+  on permanently. Every stage DOF activates at that one agent step: there is a
+  single latch, so translation and yaw can never be staged separately.
 * **Stage 1** - follower-only. The master (weights *and* input normalizer) is
-  frozen; the tactile latent is detached; the workspace and action scale ramp
-  from their initial to their final values over ``xy_curriculum_ramp_steps``.
+  frozen; the tactile latent is detached; the workspace and action scale of
+  every stage DOF ramp from their initial to their final values over
+  ``xy_curriculum_ramp_steps``, driven by ONE shared dimensionless progress.
 * **Stage 2** - optional joint fine-tuning. Enabled by YAML. The master actor
   trunk, action head and critic unfreeze at a small learning rate with a KL
   regularizer toward the Stage-1-start policy; the tactile encoder stays frozen
@@ -65,7 +78,11 @@ from BrainCo_DexHand.algo.hora.ppo.hierarchical_experience import (
 from BrainCo_DexHand.algo.hora.ppo.hierarchical_obs import (
     FOLLOWER_OBS_DIM,
     TACTILE_LATENT_DIM,
+    XY_ACTION_DIM,
+    follower_obs_dim,
     follower_obs_from_env,
+    stage_follower_obs_from_env,
+    validate_stage_dofs,
     validate_tactile_latent,
 )
 from BrainCo_DexHand.algo.hora.ppo.ppo import AdaptiveScheduler, policy_kl
@@ -85,8 +102,20 @@ STAGE_NAMES = {
 }
 
 # Marker stored in every hierarchical checkpoint so a plain Stage-1 PPO
-# checkpoint can never be mistaken for a full hierarchical resume.
+# checkpoint can never be mistaken for a full hierarchical resume. The marker is
+# deliberately NOT bumped for the wider followers: the payload gained optional
+# dimension fields instead, and a checkpoint whose follower width differs from
+# the current task is rejected explicitly rather than silently reshaped.
 CHECKPOINT_FORMAT = "hora_hierarchical_ppo_v1"
+
+# Fixed stage joint order per supported follower width. Mirrors
+# ``yaw_stage.STAGE_JOINT_NAMES_BY_DOF``; duplicated here so the trainer never
+# imports a task module.
+STAGE_JOINT_NAMES_BY_DOF = {
+    1: ("stage_yaw_joint",),
+    2: ("stage_x_joint", "stage_y_joint"),
+    3: ("stage_x_joint", "stage_y_joint", "stage_yaw_joint"),
+}
 
 
 def _section(config, key):
@@ -133,15 +162,17 @@ class HierarchicalPPO:
         action_space = self.env.action_space
         self.env_action_dim = int(action_space.shape[0])
         self.master_action_dim = int(
-            getattr(self.env.cfg, "finger_action_space", self.env_action_dim - 2)
+            getattr(self.env.cfg, "finger_action_space", self.env_action_dim - XY_ACTION_DIM)
         )
         self.follower_action_dim = self.env_action_dim - self.master_action_dim
-        if self.follower_action_dim != 2:
+        try:
+            validate_stage_dofs(self.follower_action_dim)
+        except ValueError as error:
             raise ValueError(
-                "HierarchicalPPO expects a 2-D horizontal translation follower: env "
-                f"action_space={self.env_action_dim}, finger_action_space="
-                f"{self.master_action_dim}"
-            )
+                f"{error} (env action_space={self.env_action_dim}, "
+                f"finger_action_space={self.master_action_dim})"
+            ) from None
+        self.stage_dof_names = self._resolve_stage_dof_names()
         self.observation_space = self.env.observation_space
         self.obs_shape = self.observation_space.shape
 
@@ -175,7 +206,8 @@ class HierarchicalPPO:
         )
 
         # ---- follower model ----
-        self.follower_obs_dim = FOLLOWER_OBS_DIM
+        # The observation width follows the stage width: 154 / 159 / 164.
+        self.follower_obs_dim = follower_obs_dim(self.follower_action_dim)
         self.follower_critic_priv_dim = int(_get(self.follower_config, "critic_priv_dim", 11))
         if self.follower_critic_priv_dim > self.priv_info_dim:
             raise ValueError(
@@ -351,11 +383,70 @@ class HierarchicalPPO:
         self.data_collect_time = 0.0
         self.rl_train_time = 0.0
         self.last_rollout_speed = 0.0
+        # Last per-DOF curriculum values published to the environment.
+        self.stage_curriculum: dict[str, float] = {}
         self._apply_stage_freeze()
+        print(
+            f"[INFO] HierarchicalPPO: {self.master_action_dim}-D master + "
+            f"{self.follower_action_dim}-D follower {self.stage_dof_names} "
+            f"(env action {self.env_action_dim}, follower obs {self.follower_obs_dim}).",
+            flush=True,
+        )
 
     # ------------------------------------------------------------------
     # construction helpers
     # ------------------------------------------------------------------
+
+    def _resolve_stage_dof_names(self) -> tuple[str, ...]:
+        """Return the task's stage joint names, validated against its width.
+
+        The names come from the environment config (``stage_joint_names``, or
+        the legacy ``xy_stage_joint_names``) and must match the canonical order
+        for the resolved follower width exactly. This is the contract that
+        makes ``action[:, 21:]`` unambiguous.
+
+        Returns:
+            The stage joint names in action order.
+
+        Raises:
+            ValueError: If the task declares a different order or width.
+        """
+        expected = STAGE_JOINT_NAMES_BY_DOF[self.follower_action_dim]
+        declared = getattr(self.env.cfg, "stage_joint_names", None)
+        if declared is None:
+            declared = getattr(self.env.cfg, "xy_stage_joint_names", None)
+        if declared is None:
+            return expected
+        declared = tuple(str(name) for name in declared)
+        if declared != expected:
+            raise ValueError(
+                f"Task declares stage joints {declared} but a "
+                f"{self.follower_action_dim}-DOF hierarchical follower requires "
+                f"{expected} in exactly this action order"
+            )
+        return declared
+
+    def _follower_obs_from_env(
+        self, obs_dict, *, executed_hand_action, tactile_latent
+    ) -> torch.Tensor:
+        """Build this task's follower observation for the current cycle.
+
+        The 2-DOF stage keeps the original ``xy_*`` reader byte-for-byte; wider
+        stages use the generic ``stage_*`` reader. Both index nothing but the
+        five stage channels, so no privileged state can reach the actor.
+        """
+        if self.follower_action_dim == XY_ACTION_DIM:
+            return follower_obs_from_env(
+                obs_dict,
+                executed_hand_action=executed_hand_action,
+                tactile_latent=tactile_latent,
+            )
+        return stage_follower_obs_from_env(
+            obs_dict,
+            executed_hand_action=executed_hand_action,
+            tactile_latent=tactile_latent,
+            num_stage_dofs=self.follower_action_dim,
+        )
 
     def _build_master_optimizer(self):
         """Adam over the master with a reduced tactile-encoder learning rate."""
@@ -436,11 +527,12 @@ class HierarchicalPPO:
             self.master_reference.requires_grad_(False)
             self.master_reference.eval()
         print(
-            f"[INFO] Hierarchical curriculum: activating the XY follower at "
-            f"agent_steps={self.agent_steps} "
+            f"[INFO] Hierarchical curriculum: activating the "
+            f"{self.follower_action_dim}-DOF stage follower "
+            f"{self.stage_dof_names} at agent_steps={self.agent_steps} "
             f"(speed EMA={self.activation_speed_ema:.4f} rad/s > "
             f"{self.activation_speed_threshold:.2f} for {self.activation_patience} epochs). "
-            "The master is now frozen.",
+            "All stage DOFs activate at this same step; the master is now frozen.",
             flush=True,
         )
 
@@ -488,7 +580,12 @@ class HierarchicalPPO:
             self._enter_joint_finetune()
 
     def xy_curriculum_progress(self) -> float:
-        """Return the workspace / action-scale ramp progress in ``[0, 1]``."""
+        """Return the SHARED workspace / action-scale ramp progress in ``[0, 1]``.
+
+        One dimensionless number drives every stage DOF: translation and yaw are
+        interpolated between their own (metre / radian) endpoints from exactly
+        this value, so their curricula can never drift apart.
+        """
         if self.current_stage == STAGE_MASTER:
             return 0.0
         if self.xy_curriculum_ramp_steps <= 0:
@@ -498,16 +595,53 @@ class HierarchicalPPO:
         ) / float(self.xy_curriculum_ramp_steps)
         return min(max(progress, 0.0), 1.0)
 
-    def _push_xy_curriculum(self) -> tuple[float, float]:
-        """Publish the current workspace / action scale to the environment."""
+    # Preferred, unit-neutral name. ``xy_curriculum_progress`` is kept as the
+    # original spelling used by play.py and the XY regression tests.
+    stage_curriculum_progress = xy_curriculum_progress
+
+    def _push_stage_curriculum(self) -> dict[str, float]:
+        """Publish the resolved per-DOF workspace / action scale to the env.
+
+        Returns:
+            The environment's resolved curriculum values (metres for XY,
+            radians for yaw) plus the shared ``stage_progress``.
+
+        Raises:
+            RuntimeError: If the environment exposes no stage curriculum setter.
+        """
         progress = self.xy_curriculum_progress()
-        setter = getattr(self.env, "set_xy_curriculum_progress", None)
-        if setter is None:
-            raise RuntimeError(
-                "HierarchicalPPO requires an environment exposing "
-                "set_xy_curriculum_progress(); use --task valvedriver_tactile_xy."
-            )
-        return setter(progress)
+        # Publish the latch BEFORE the rollout: while the follower is inactive
+        # the environment holds every stage joint mechanically at zero, so
+        # Stage 0 is the rigidly-mounted baseline rather than a compliant wrist
+        # that the grasp reaction can walk to its hard stop.
+        lock_setter = getattr(self.env, "set_stage_follower_active", None)
+        if lock_setter is not None:
+            lock_setter(self.follower_active)
+        stage_setter = getattr(self.env, "set_stage_curriculum_progress", None)
+        if stage_setter is not None:
+            values = {key: float(value) for key, value in dict(stage_setter(progress)).items()}
+        else:
+            setter = getattr(self.env, "set_xy_curriculum_progress", None)
+            if setter is None:
+                raise RuntimeError(
+                    "HierarchicalPPO requires an environment exposing "
+                    "set_stage_curriculum_progress() or set_xy_curriculum_progress(); "
+                    "use a hierarchical stage task."
+                )
+            workspace, action_scale = setter(progress)
+            values = {
+                "xy_workspace": float(workspace),
+                "xy_action_scale": float(action_scale),
+            }
+        values["stage_progress"] = float(progress)
+        values["stage_locked"] = 0.0 if self.follower_active else 1.0
+        self.stage_curriculum = values
+        return values
+
+    def _push_xy_curriculum(self) -> tuple[float, float]:
+        """Publish the curriculum and return the XY ``(workspace, action scale)``."""
+        values = self._push_stage_curriculum()
+        return values.get("xy_workspace", 0.0), values.get("xy_action_scale", 0.0)
 
     # ------------------------------------------------------------------
     # train / eval mode
@@ -577,7 +711,7 @@ class HierarchicalPPO:
 
     @torch.no_grad()
     def follower_act(self, follower_obs, critic_priv) -> dict:
-        """One follower forward on the strict 159-D observation."""
+        """One follower forward on the strict ``follower_obs_dim`` observation."""
         if follower_obs.shape[-1] != self.follower_obs_dim:
             raise RuntimeError(
                 f"Follower observation must be [B, {self.follower_obs_dim}], got "
@@ -618,7 +752,7 @@ class HierarchicalPPO:
         """Collect one rollout and return the signed mean angular velocity."""
         speed_sum = 0.0
         speed_count = 0
-        zeros_xy = torch.zeros(
+        zeros_stage = torch.zeros(
             (self.num_actors, self.follower_action_dim), device=self.device
         )
 
@@ -632,32 +766,33 @@ class HierarchicalPPO:
             tactile_latent = master_result["tactile_latent"].detach()
 
             # ---- follower decides from the SAME s_t, no env interaction yet ----
-            follower_obs = follower_obs_from_env(
+            follower_obs = self._follower_obs_from_env(
                 obs_dict,
                 executed_hand_action=executed_hand_action,
                 tactile_latent=tactile_latent,
             )
-            if follower_obs.shape[-1] != FOLLOWER_OBS_DIM:
+            if follower_obs.shape[-1] != self.follower_obs_dim:
                 raise RuntimeError(
-                    f"follower_obs.shape[-1] == {follower_obs.shape[-1]} != {FOLLOWER_OBS_DIM}"
+                    f"follower_obs.shape[-1] == {follower_obs.shape[-1]} != "
+                    f"{self.follower_obs_dim}"
                 )
             critic_priv = self._critic_priv(obs_dict)
             if self.follower_active:
                 follower_result = self.follower_act(follower_obs, critic_priv)
-                sampled_xy_action = follower_result["actions"]
-                executed_xy_action = torch.clamp(sampled_xy_action, -1.0, 1.0)
+                sampled_stage_action = follower_result["actions"]
+                executed_stage_action = torch.clamp(sampled_stage_action, -1.0, 1.0)
             else:
-                # Stage 0: the follower neither samples nor updates; the stage is
-                # held at zero by the same physical actuator.
+                # Stage 0: the follower neither samples nor updates; every stage
+                # DOF is held at zero by the same physical actuators.
                 follower_result = {
-                    "actions": zeros_xy,
+                    "actions": zeros_stage,
                     "neglogpacs": torch.zeros(self.num_actors, device=self.device),
                     "values": torch.zeros((self.num_actors, 1), device=self.device),
-                    "mus": zeros_xy,
-                    "sigmas": torch.ones_like(zeros_xy),
+                    "mus": zeros_stage,
+                    "sigmas": torch.ones_like(zeros_stage),
                 }
-                sampled_xy_action = zeros_xy
-                executed_xy_action = zeros_xy
+                sampled_stage_action = zeros_stage
+                executed_stage_action = zeros_stage
 
             # ---- store o_t and both decisions BEFORE the single env step ----
             self.storage.update_data("obses", n, obs_dict["obs"])
@@ -672,9 +807,9 @@ class HierarchicalPPO:
             self.storage.update_data("follower_obses", n, follower_obs.detach())
             if critic_priv is not None:
                 self.storage.update_data("follower_critic_priv", n, critic_priv.detach())
-            self.storage.update_data("follower_actions", n, sampled_xy_action.detach())
+            self.storage.update_data("follower_actions", n, sampled_stage_action.detach())
             self.storage.update_data(
-                "follower_executed_actions", n, executed_xy_action.detach()
+                "follower_executed_actions", n, executed_stage_action.detach()
             )
             self.storage.update_data(
                 "follower_neglogpacs", n, follower_result["neglogpacs"].detach()
@@ -684,7 +819,7 @@ class HierarchicalPPO:
             self.storage.update_data("follower_sigmas", n, follower_result["sigmas"].detach())
 
             # ---- exactly one environment interaction per control cycle ----
-            joint_action = torch.cat([executed_hand_action, executed_xy_action], dim=-1)
+            joint_action = torch.cat([executed_hand_action, executed_stage_action], dim=-1)
             if joint_action.shape[-1] != self.env_action_dim:
                 raise RuntimeError(
                     f"Joint action must be [B, {self.env_action_dim}], got "
@@ -747,7 +882,7 @@ class HierarchicalPPO:
 
         # ---- bootstrap values after the rollout ----
         last_master = self.master_act(self.obs)
-        last_follower_obs = follower_obs_from_env(
+        last_follower_obs = self._follower_obs_from_env(
             self.obs,
             executed_hand_action=torch.clamp(last_master["actions"], -1.0, 1.0),
             tactile_latent=last_master["tactile_latent"].detach(),
@@ -1058,8 +1193,31 @@ class HierarchicalPPO:
             return None
         return torch.mean(torch.stack(items)).item()
 
-    def write_stats(self, stats, workspace: float, action_scale: float) -> None:
+    def write_stats(
+        self,
+        stats,
+        workspace: float | None = None,
+        action_scale: float | None = None,
+        curriculum: dict[str, float] | None = None,
+    ) -> None:
+        """Write one epoch of scalars.
+
+        Args:
+            stats: Loss/KL lists returned by :meth:`train_epoch`.
+            workspace: XY workspace of this rollout (legacy positional form).
+            action_scale: XY action scale of this rollout (legacy positional form).
+            curriculum: Full per-DOF curriculum map published by the environment.
+                Every entry becomes a ``curriculum/<name>`` scalar, so the yaw
+                task logs ``curriculum/yaw_workspace`` and
+                ``curriculum/yaw_action_scale`` alongside the XY ones.
+        """
         step = self.agent_steps
+        resolved = dict(curriculum) if curriculum else {}
+        if workspace is not None:
+            resolved.setdefault("xy_workspace", float(workspace))
+        if action_scale is not None:
+            resolved.setdefault("xy_action_scale", float(action_scale))
+        resolved.setdefault("stage_progress", self.xy_curriculum_progress())
         if self.rl_train_time > 0:
             self.writer.add_scalar(
                 "performance/RLTrainFPS", self.agent_steps / self.rl_train_time, step
@@ -1094,10 +1252,13 @@ class HierarchicalPPO:
             self.activation_patience_counter,
             step,
         )
-        self.writer.add_scalar("curriculum/xy_workspace", workspace, step)
-        self.writer.add_scalar("curriculum/xy_action_scale", action_scale, step)
+        for name, value in resolved.items():
+            self.writer.add_scalar(f"curriculum/{name}", value, step)
         self.writer.add_scalar(
             "curriculum/xy_curriculum_progress", self.xy_curriculum_progress(), step
+        )
+        self.writer.add_scalar(
+            "hierarchical/follower_action_dim", float(self.follower_action_dim), step
         )
         self.writer.add_scalar(
             "hierarchical/master_frozen", float(self.master_frozen), step
@@ -1122,6 +1283,13 @@ class HierarchicalPPO:
         """Persist models, optimizers, normalizers and the complete curriculum."""
         payload = {
             "format": CHECKPOINT_FORMAT,
+            # Optional dimension fields. Older checkpoints predate them; the
+            # restore path infers the same numbers from the follower weights.
+            "master_action_dim": int(self.master_action_dim),
+            "follower_action_dim": int(self.follower_action_dim),
+            "follower_obs_dim": int(self.follower_obs_dim),
+            "env_action_dim": int(self.env_action_dim),
+            "stage_dof_names": list(self.stage_dof_names),
             "master": self.master.state_dict(),
             "follower": self.follower.state_dict(),
             "master_optimizer": self.master_optimizer.state_dict(),
@@ -1138,6 +1306,9 @@ class HierarchicalPPO:
             "stage_start_agent_step": int(self.stage_start_agent_step),
             "xy_curriculum_progress": float(self.xy_curriculum_progress()),
             "xy_curriculum_ramp_steps": int(self.xy_curriculum_ramp_steps),
+            # Unit-neutral aliases; the ``xy_`` spellings stay for old readers.
+            "stage_curriculum_progress": float(self.xy_curriculum_progress()),
+            "stage_curriculum_ramp_steps": int(self.xy_curriculum_ramp_steps),
             "agent_steps": int(self.agent_steps),
             "epoch_num": int(self.epoch_num),
             "best_rewards": float(self.best_rewards),
@@ -1149,6 +1320,77 @@ class HierarchicalPPO:
         if self.master_reference is not None:
             payload["master_reference"] = self.master_reference.state_dict()
         torch.save(payload, f"{name}.pth")
+
+    @staticmethod
+    def _checkpoint_follower_dims(checkpoint) -> tuple[int | None, int | None]:
+        """Return ``(follower_action_dim, follower_obs_dim)`` of a checkpoint.
+
+        Explicit payload fields win; older checkpoints that predate them are
+        inferred from the follower weight shapes, so a 2-D follower is still
+        recognised as 2-D and rejected loudly instead of silently reshaped.
+        """
+        action_dim = checkpoint.get("follower_action_dim")
+        obs_dim = checkpoint.get("follower_obs_dim")
+        state = checkpoint.get("follower") or {}
+        if action_dim is None:
+            weight = state.get("mu.weight")
+            if weight is not None and getattr(weight, "ndim", 0) == 2:
+                action_dim = int(weight.shape[0])
+        if obs_dim is None:
+            weight = state.get("actor_mlp.mlp.0.weight")
+            if weight is not None and getattr(weight, "ndim", 0) == 2:
+                obs_dim = int(weight.shape[1])
+        return (
+            None if action_dim is None else int(action_dim),
+            None if obs_dim is None else int(obs_dim),
+        )
+
+    def _validate_checkpoint_dimensions(self, checkpoint, *, checkpoint_path: str) -> None:
+        """Reject a hierarchical checkpoint whose follower width differs.
+
+        There is no weight migration between stage widths: a 2-D XY follower has
+        never seen the yaw channels and its input normalizer statistics are for
+        a 159-D vector, so partially loading it would silently produce a
+        different policy. The resume fails with an explicit message instead;
+        ``strict=False`` is never used.
+
+        Raises:
+            RuntimeError: If the checkpoint's follower/master widths or stage
+                joint order do not match this task.
+        """
+        action_dim, obs_dim = self._checkpoint_follower_dims(checkpoint)
+        problems = []
+        if action_dim is not None and action_dim != self.follower_action_dim:
+            problems.append(
+                f"follower_action_dim {action_dim} != {self.follower_action_dim}"
+            )
+        if obs_dim is not None and obs_dim != self.follower_obs_dim:
+            problems.append(f"follower_obs_dim {obs_dim} != {self.follower_obs_dim}")
+        master_dim = checkpoint.get("master_action_dim")
+        if master_dim is not None and int(master_dim) != self.master_action_dim:
+            problems.append(
+                f"master_action_dim {int(master_dim)} != {self.master_action_dim}"
+            )
+        stage_names = checkpoint.get("stage_dof_names")
+        if stage_names is not None:
+            stage_names = tuple(str(name) for name in stage_names)
+            if stage_names != tuple(self.stage_dof_names):
+                problems.append(
+                    f"stage_dof_names {stage_names} != {tuple(self.stage_dof_names)}"
+                )
+        if not problems:
+            return
+        detail = "; ".join(problems)
+        raise RuntimeError(
+            f"Incompatible hierarchical checkpoint '{checkpoint_path}': {detail}. "
+            f"This task runs a {self.follower_action_dim}-DOF follower "
+            f"{tuple(self.stage_dof_names)} with a {self.follower_obs_dim}-D "
+            "observation. There is no weight migration between stage widths (a "
+            "2-D XY follower has never seen the yaw channel and its input "
+            "normalizer is 159-D), so the checkpoint is refused rather than "
+            "partially loaded. Resume the matching task, or warm-start only the "
+            "21-D master with --master_checkpoint from a Stage-1 PPO teacher."
+        )
 
     def restore_train(self, fn: str) -> None:
         """Resume a complete hierarchical run, curriculum state included."""
@@ -1178,6 +1420,7 @@ class HierarchicalPPO:
             raise RuntimeError(
                 f"Strict hierarchical resume failed: missing keys {missing} in {fn}"
             )
+        self._validate_checkpoint_dimensions(checkpoint, checkpoint_path=str(fn))
 
         validate_teacher_tactile_checkpoint_compatibility(
             checkpoint["master"], self.master.state_dict(), checkpoint_path=str(fn)
@@ -1287,6 +1530,7 @@ class HierarchicalPPO:
         checkpoint = torch.load(fn, map_location=self.device)
         if checkpoint.get("format") != CHECKPOINT_FORMAT:
             raise RuntimeError(f"'{fn}' is not a HierarchicalPPO checkpoint.")
+        self._validate_checkpoint_dimensions(checkpoint, checkpoint_path=str(fn))
         self.master.load_state_dict(checkpoint["master"], strict=True)
         self.follower.load_state_dict(checkpoint["follower"], strict=True)
         self.master_running_mean_std.load_state_dict(checkpoint["master_running_mean_std"])
@@ -1301,7 +1545,7 @@ class HierarchicalPPO:
     def test(self) -> None:
         """Roll out the deterministic hierarchical policy indefinitely."""
         self.set_eval()
-        self._push_xy_curriculum()
+        self._push_stage_curriculum()
         obs_dict = self.env.reset()
         while True:
             processed = (
@@ -1320,7 +1564,7 @@ class HierarchicalPPO:
             )
             executed_hand_action = torch.clamp(mu, -1.0, 1.0)
             latent = validate_tactile_latent(latent).detach()
-            follower_obs = follower_obs_from_env(
+            follower_obs = self._follower_obs_from_env(
                 obs_dict,
                 executed_hand_action=executed_hand_action,
                 tactile_latent=latent,
@@ -1331,15 +1575,15 @@ class HierarchicalPPO:
                     if self.follower_normalize_input
                     else follower_obs
                 )
-                executed_xy = torch.clamp(
+                executed_stage = torch.clamp(
                     self.follower.act_inference(follower_input), -1.0, 1.0
                 )
             else:
-                executed_xy = torch.zeros(
+                executed_stage = torch.zeros(
                     (follower_obs.shape[0], self.follower_action_dim), device=self.device
                 )
             obs_dict, _r, _done, _info = self.env.step(
-                torch.cat([executed_hand_action, executed_xy], dim=-1)
+                torch.cat([executed_hand_action, executed_stage], dim=-1)
             )
 
     # ------------------------------------------------------------------
@@ -1357,12 +1601,12 @@ class HierarchicalPPO:
         while self.agent_steps < self.max_agent_steps:
             self.epoch_num += 1
             iter_start = time.time()
-            workspace, action_scale = self._push_xy_curriculum()
+            curriculum = self._push_stage_curriculum()
             stats = self.train_epoch()
             self.storage.data_dict = None
             self._update_curriculum(stats["rollout_speed"])
 
-            self.write_stats(stats, workspace, action_scale)
+            self.write_stats(stats, curriculum=curriculum)
             mean_rewards = self.episode_rewards.get_mean()
             mean_raw_rewards = self.episode_raw_rewards.get_mean()
             mean_lengths = self.episode_lengths.get_mean()
@@ -1390,8 +1634,7 @@ class HierarchicalPPO:
                 elapsed=time.time() - start_time,
                 mean_rewards=mean_rewards,
                 mean_lengths=mean_lengths,
-                workspace=workspace,
-                action_scale=action_scale,
+                curriculum=curriculum,
             )
 
             if self.save_freq > 0 and self.epoch_num % self.save_freq == 0:
@@ -1428,8 +1671,7 @@ class HierarchicalPPO:
         elapsed,
         mean_rewards,
         mean_lengths,
-        workspace,
-        action_scale,
+        curriculum,
     ) -> None:
         width = 100
         pad = 34
@@ -1448,13 +1690,27 @@ class HierarchicalPPO:
             f"{'Activation speed EMA:':>{pad}} {self.activation_speed_ema:.4f} rad/s",
             f"{'Activation patience:':>{pad}} "
             f"{self.activation_patience_counter}/{self.activation_patience}",
-            f"{'XY workspace / action scale:':>{pad}} "
-            f"{workspace:.4f} m / {action_scale:.4f} m",
+            f"{'Stage curriculum progress:':>{pad}} "
+            f"{curriculum.get('stage_progress', 0.0):.4f}",
             f"{'Mean reward:':>{pad}} {mean_rewards:.4f}",
             f"{'Mean episode length:':>{pad}} {mean_lengths:.4f}",
         ]
+        if "xy_workspace" in curriculum:
+            lines.insert(
+                -2,
+                f"{'XY workspace / action scale:':>{pad}} "
+                f"{curriculum['xy_workspace']:.4f} m / "
+                f"{curriculum['xy_action_scale']:.4f} m",
+            )
+        if "yaw_workspace" in curriculum:
+            lines.insert(
+                -2,
+                f"{'Yaw workspace / action scale:':>{pad}} "
+                f"{curriculum['yaw_workspace']:.4f} rad / "
+                f"{curriculum['yaw_action_scale']:.4f} rad",
+            )
         for key in sorted(self.extra_info):
-            if not key.startswith(("xy/", "screw/", "curriculum/")):
+            if not key.startswith(("xy/", "yaw/", "screw/", "curriculum/")):
                 continue
             value = self.extra_info[key]
             if isinstance(value, torch.Tensor):

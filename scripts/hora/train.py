@@ -50,7 +50,9 @@ parser.add_argument('--task', type=str, default='cylinder',
                              'nutbolt_tactile', 'screwdriver_tactile',
                              'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
                              'vavledriver_tactile',
-                             'valvedriver_tactile_xy'])
+                             'valvedriver_tactile_xy',
+                             'valvedriver_tactile_xyyaw',
+                             'valvedriver_tactile_yaw'])
 parser.add_argument('--algo', type=str, default='PPO',
                     choices=['PPO', 'ProprioAdapt', 'HierarchicalPPO'])
 parser.add_argument('--train_cfg', type=str, default='',
@@ -97,13 +99,26 @@ args = parser.parse_args()
 if args.tactile_vis_show and not args.visualize_tactile:
     args.visualize_tactile = True
 
-# Tasks whose hand additionally rides on a physical two-axis translation stage.
+# Tasks whose hand additionally rides on a physical end-effector stage and are
+# therefore trained by the master/follower HierarchicalPPO trainer.
+#   valvedriver_tactile_xy    : 21 + 2 (world X/Y)         -> 2-D follower
+#   valvedriver_tactile_xyyaw : 21 + 2 + 1 (X/Y + world Z) -> 3-D follower
+#   valvedriver_tactile_yaw   : 21 + 1 (world Z only)      -> 1-D follower
 _XY_SCREW_TASKS = ('valvedriver_tactile_xy',)
+_XYYAW_SCREW_TASKS = ('valvedriver_tactile_xyyaw',)
+_YAW_SCREW_TASKS = ('valvedriver_tactile_yaw',)
+_HIERARCHICAL_SCREW_TASKS = _XY_SCREW_TASKS + _XYYAW_SCREW_TASKS + _YAW_SCREW_TASKS
+# Default train config per hierarchical task.
+_HIERARCHICAL_TRAIN_CFG = {
+    'valvedriver_tactile_xy': 'valvedriver_tactile_frame813_xy',
+    'valvedriver_tactile_xyyaw': 'valvedriver_tactile_frame813_xyyaw',
+    'valvedriver_tactile_yaw': 'valvedriver_tactile_frame813_yaw',
+}
 _TACTILE_SCREW_TASKS = (
     'nutbolt_tactile', 'screwdriver_tactile',
     'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
     'vavledriver_tactile',  # backward-compatible alias for the original typo
-) + _XY_SCREW_TASKS
+) + _HIERARCHICAL_SCREW_TASKS
 _TACTILE_ROTATE_TASKS = ('rotate_ball_tactile', 'rotate_cylinder_tactile')
 _TACTILE_TASKS = _TACTILE_SCREW_TASKS + _TACTILE_ROTATE_TASKS
 _NON_TACTILE_SCREW_TASKS = (
@@ -113,8 +128,8 @@ _NON_TACTILE_SCREW_TASKS = (
 )
 _SCREW_TASKS = _NON_TACTILE_SCREW_TASKS + _TACTILE_SCREW_TASKS
 if not args.train_cfg:
-    if args.task in _XY_SCREW_TASKS:
-        args.train_cfg = 'valvedriver_tactile_frame813_xy'
+    if args.task in _HIERARCHICAL_SCREW_TASKS:
+        args.train_cfg = _HIERARCHICAL_TRAIN_CFG[args.task]
     elif args.task in _TACTILE_ROTATE_TASKS:
         args.train_cfg = 'Revo3HandTactileRotate'
     elif args.task in _TACTILE_SCREW_TASKS:
@@ -246,6 +261,18 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy_env imp
 from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy_env_cfg import (
     Revo3HandVavleDriverTactileXYEnvCfg,
 )
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xyyaw_env import (
+    Revo3HandScrewTactileXYYawEnv,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xyyaw_env_cfg import (
+    Revo3HandVavleDriverTactileXYYawEnvCfg,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_yaw_env import (
+    Revo3HandScrewTactileYawEnv,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_yaw_env_cfg import (
+    Revo3HandVavleDriverTactileYawEnvCfg,
+)
 
 
 _ALGO_MAP = {
@@ -342,6 +369,15 @@ _SCREW_ENV_CFG = {
     'valvedriver_tactile_40': Revo3HandValveDriver40TactileEnvCfg,
     'vavledriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
     'valvedriver_tactile_xy': Revo3HandVavleDriverTactileXYEnvCfg,
+    'valvedriver_tactile_xyyaw': Revo3HandVavleDriverTactileXYYawEnvCfg,
+    'valvedriver_tactile_yaw': Revo3HandVavleDriverTactileYawEnvCfg,
+}
+
+# Environment class per hierarchical stage task.
+_HIERARCHICAL_ENV_CLASS = {
+    'valvedriver_tactile_xy': Revo3HandScrewTactileXYEnv,
+    'valvedriver_tactile_xyyaw': Revo3HandScrewTactileXYYawEnv,
+    'valvedriver_tactile_yaw': Revo3HandScrewTactileYawEnv,
 }
 
 _TACTILE_ROTATE_ENV_CFG = {
@@ -507,13 +543,42 @@ def _attach_env_runtime_to_config(full_config, env_cfg, task_name: str) -> None:
                 float(env_cfg.target_angvel_min),
                 float(env_cfg.target_angvel_max),
             ]
-    # The two-axis translation stage is identified by its own config contract,
-    # not by a task-name list, so this stays valid for any future XY variant.
-    if hasattr(env_cfg, 'xy_joint_limit'):
+    # Each stage DOF group is identified by its own config contract, not by a
+    # task-name list, so this stays valid for every stage layout. The three
+    # counts are recorded separately: the yaw channel is one action, never
+    # "another XY channel".
+    has_xy = hasattr(env_cfg, 'xy_joint_limit')
+    has_yaw = hasattr(env_cfg, 'yaw_joint_limit')
+    if has_xy or has_yaw:
+        finger_action_dim = int(env_cfg.finger_action_space)
+        xy_action_dim = 2 if has_xy else 0
+        yaw_action_dim = 1 if has_yaw else 0
+        follower_action_dim = xy_action_dim + yaw_action_dim
+        if int(env_cfg.action_space) != finger_action_dim + follower_action_dim:
+            raise ValueError(
+                f'Stage task action_space ({env_cfg.action_space}) != '
+                f'{finger_action_dim} finger + {xy_action_dim} xy + {yaw_action_dim} yaw'
+            )
         runtime.update(
             {
-                'finger_action_dim': int(env_cfg.finger_action_space),
-                'xy_action_dim': int(env_cfg.action_space) - int(env_cfg.finger_action_space),
+                'finger_action_dim': finger_action_dim,
+                'xy_action_dim': xy_action_dim,
+                'yaw_action_dim': yaw_action_dim,
+                'follower_action_dim': follower_action_dim,
+                # 21 executed hand action + 128 tactile latent + 5 * D stage.
+                'follower_obs_dim': 149 + 5 * follower_action_dim,
+                'stage_joint_names': [
+                    str(value)
+                    for value in getattr(
+                        env_cfg, 'stage_joint_names', getattr(env_cfg, 'xy_stage_joint_names', ())
+                    )
+                ],
+                'high_speed_reward_enable': bool(env_cfg.high_speed_reward_enable),
+            }
+        )
+    if has_xy:
+        runtime.update(
+            {
                 'xy_stage_joint_names': [
                     str(value) for value in env_cfg.xy_stage_joint_names
                 ],
@@ -535,8 +600,29 @@ def _attach_env_runtime_to_config(full_config, env_cfg, task_name: str) -> None:
                 'xy_pgain': float(env_cfg.xy_pgain),
                 'xy_dgain': float(env_cfg.xy_dgain),
                 'xy_curriculum_ramp_steps': int(env_cfg.xy_curriculum_ramp_steps),
-                'follower_obs_dim': 159,
-                'high_speed_reward_enable': bool(env_cfg.high_speed_reward_enable),
+            }
+        )
+    if has_yaw:
+        runtime.update(
+            {
+                'yaw_stage_joint_name': 'stage_yaw_joint',
+                'yaw_stage_world_axis': 'Z',
+                'yaw_joint_limit_rad': float(env_cfg.yaw_joint_limit),
+                'yaw_workspace_rad': [
+                    float(env_cfg.yaw_workspace_initial),
+                    float(env_cfg.yaw_workspace_final),
+                ],
+                'yaw_action_scale_rad': [
+                    float(env_cfg.yaw_action_scale_initial),
+                    float(env_cfg.yaw_action_scale_final),
+                ],
+                'yaw_effort_limit_nm': float(env_cfg.yaw_effort_limit),
+                'yaw_velocity_limit_rad_s': float(env_cfg.yaw_velocity_limit),
+                'yaw_acceleration_limit_rad_s2': float(env_cfg.yaw_acceleration_limit),
+                'yaw_pgain_nm_per_rad': float(env_cfg.yaw_pgain),
+                'yaw_dgain_nms_per_rad': float(env_cfg.yaw_dgain),
+                'yaw_action_smoothing': float(env_cfg.yaw_action_smoothing),
+                'yaw_curriculum_ramp_steps': int(env_cfg.yaw_curriculum_ramp_steps),
             }
         )
     full_config.env_runtime = OmegaConf.create(runtime)
@@ -649,15 +735,15 @@ def main():
             '--master_checkpoint (warm-start the master only) and --checkpoint '
             '(full hierarchical resume) are mutually exclusive.'
         )
-    if args.algo == 'HierarchicalPPO' and args.task not in _XY_SCREW_TASKS:
+    if args.algo == 'HierarchicalPPO' and args.task not in _HIERARCHICAL_SCREW_TASKS:
         raise ValueError(
-            f'--algo HierarchicalPPO requires a two-axis stage task '
-            f'{_XY_SCREW_TASKS}, got {args.task!r}.'
+            f'--algo HierarchicalPPO requires an end-effector stage task '
+            f'{_HIERARCHICAL_SCREW_TASKS}, got {args.task!r}.'
         )
-    if args.task in _XY_SCREW_TASKS and args.algo != 'HierarchicalPPO':
+    if args.task in _HIERARCHICAL_SCREW_TASKS and args.algo != 'HierarchicalPPO':
         raise ValueError(
-            f'Task {args.task!r} has a 23-dim action space and requires '
-            '--algo HierarchicalPPO.'
+            f'Task {args.task!r} has a wider-than-21 action space (21 hand joints '
+            'plus its end-effector stage DOFs) and requires --algo HierarchicalPPO.'
         )
 
     set_np_formatting()
@@ -693,8 +779,8 @@ def main():
         env_cfg.sim.gravity = (0.0, 0.0, -9.81)  # full gravity for test/play
     if args.task in _TACTILE_ROTATE_TASKS:
         env_class = Revo3HandTactileRotateEnv
-    elif args.task in _XY_SCREW_TASKS:
-        env_class = Revo3HandScrewTactileXYEnv
+    elif args.task in _HIERARCHICAL_SCREW_TASKS:
+        env_class = _HIERARCHICAL_ENV_CLASS[args.task]
     elif args.task in _TACTILE_SCREW_TASKS:
         env_class = Revo3HandScrewTactileEnv
     else:
