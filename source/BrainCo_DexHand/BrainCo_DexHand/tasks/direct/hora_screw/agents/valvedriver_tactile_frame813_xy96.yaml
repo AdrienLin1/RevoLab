@@ -126,7 +126,7 @@ hierarchical:
   # Raised from the baseline 0.8 to 1.1 rad/s: the follower is handed a hand
   # policy that already turns the valve fast, so the stage is asked to trim a
   # competent gait instead of propping up a marginal one.
-  activation_speed_threshold: 1.1
+  activation_speed_threshold: 1.0
   activation_patience: 5
   activation_speed_ema_beta: 0.9
   # Stage 1 -> Stage 2. With this OFF the hand policy stays frozen and every
