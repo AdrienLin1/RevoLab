@@ -366,35 +366,35 @@ class Revo3HandScrewTactileXY96Env(Revo3HandScrewTactileXYEnv):
     # ------------------------------------------------------------------
 
     def _compute_xy_stage_reward(self) -> torch.Tensor:
-        """Parent stage costs plus the chatter and drift terms.
+        """Return the parent stage cost UNCHANGED, and log extra diagnostics.
 
-        The parent prices *how fast* the stage moves.  These two terms price
-        *how often it reverses* and *how far it wanders from home*, which are
-        the two behaviours that turn a compensating end effector into one that
-        rows the valve around by itself.
+        The reward of this task is bit-identical to ``valvedriver_tactile_xy``:
+        same terms, same weights, same normalizers (the cost references in the
+        config pin the three normalizers that would otherwise follow this
+        task's tightened clamps).  That identity is what makes an xy96-vs-xy
+        comparison a controlled test of the stage MECHANICS alone, so nothing
+        here may add to, scale, or subtract from ``stage_reward``.
+
+        The quantities logged below are pure instrumentation.  They measure the
+        two behaviours this task was created to suppress -- reversal chatter and
+        drift away from home -- without paying for them in the reward, and they
+        report how far the passive mount actually deflects.
         """
         stage_reward = super()._compute_xy_stage_reward()
 
+        # Diagnostics only: deliberately under ``xy/`` and never ``xy_cost/`` or
+        # ``xy_penalty/``, which are reserved for terms that enter the reward.
         action_rate = ((self.xy_executed_action - self.xy_prev_executed_action) ** 2).sum(dim=-1)
         position = self.hand_dof_pos[:, self.xy_dof_index_tensor]
         workspace = max(float(self.xy_workspace_current), 1.0e-6)
         displacement = ((position / workspace) ** 2).mean(dim=-1)
-
-        rate_scale = float(self.cfg.xy_action_rate_penalty_scale)
-        displacement_scale = float(self.cfg.xy_displacement_penalty_scale)
-        extra = rate_scale * action_rate + displacement_scale * displacement
-
-        self.extras["xy_cost/action_rate"] = action_rate.mean()
-        self.extras["xy_penalty/action_rate"] = (rate_scale * action_rate).mean()
-        self.extras["xy_cost/displacement"] = displacement.mean()
-        self.extras["xy_penalty/displacement"] = (displacement_scale * displacement).mean()
-        # Sign-change rate of the commanded action: the direct read-out of the
-        # oscillation this task was created to remove. 1.0 means every axis
+        self.extras["xy/action_rate_sq"] = action_rate.mean()
+        self.extras["xy/normalized_displacement_sq"] = displacement.mean()
+        # Sign-change rate of the commanded action: 1.0 means every axis
         # reverses on every control step (Nyquist chatter).
-        reversal = (
+        self.extras["xy/action_reversal_rate"] = (
             (self.xy_executed_action * self.xy_prev_executed_action) < 0.0
         ).float().mean()
-        self.extras["xy/action_reversal_rate"] = reversal
         self.xy_prev_executed_action = self.xy_executed_action.clone()
 
         if self.compliance_dof_indices:
@@ -404,8 +404,6 @@ class Revo3HandScrewTactileXY96Env(Revo3HandScrewTactileXYEnv):
                     deflection[:, index].abs().mean()
                 )
 
-        stage_reward = stage_reward + extra
-        self.extras["xy/stage_reward"] = stage_reward.mean()
         return stage_reward
 
     # ------------------------------------------------------------------

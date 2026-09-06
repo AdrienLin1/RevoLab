@@ -19,12 +19,16 @@ Two problems with the original stage motivate every number below.
 2. *Oscillation was nearly free.*  Only ``xy_action_scale`` ever bound: the
    velocity clamp (0.0075 m/step) and the acceleration clamp (0.020 m/step of
    increment change) both sat above the 0.005 m/step the action could request,
-   so a full reversal was permitted every single control step.  Worse, all three
-   cost terms were normalized by those unreachable limits, so their normalized
-   magnitude never approached 1 and the penalties had no teeth.  Here the
+   so a full reversal was permitted every single control step.  Here the
    commanded peak-to-peak travel of a sustained oscillation at the observed
-   ~1.7 Hz drops from 20.3 mm to 2.8 mm, the cost references are separated from
-   the clamp limits, and two new terms price reversal and drift directly.
+   ~1.7 Hz drops from 20.3 mm to 2.8 mm.
+
+**The reward is deliberately left alone.**  Every cost term, weight and
+normalizer is identical to ``valvedriver_tactile_xy``, so an xy96-vs-xy run is a
+controlled comparison of the stage mechanics and of nothing else.  Because three
+of the baseline's normalizers were read straight off clamp limits that this task
+changes, they are pinned to the baseline's numeric values through explicit cost
+references; see section 4 of the config below.
 
 The stage also stops being a rigid weld in the four directions it does not
 actuate; see :mod:`xy_compliance`.
@@ -55,7 +59,9 @@ class Revo3HandScrewTactileXY96MixinCfg(Revo3HandScrewTactileXYMixinCfg):
     # circumradius R:  W_final / R = 0.015 / 0.035 = 0.43.  Anything near or
     # above 1.0 lets the stage orbit the handle on its own.
     xy_joint_limit = 0.02  # m   (was 0.05)
-    xy_workspace_initial = 0.004  # m   (was 0.01)
+    # Stage-1 curriculum is OFF for this task: initial == final, so the
+    # workspace is never narrowed below its design value.  See section 6.
+    xy_workspace_initial = 0.015  # m   (was 0.004, ramped)
     xy_workspace_final = 0.015  # m   (was 0.05)
     # Observation normalizer must equal the asset hard limit (validator).
     xy_position_obs_scale = 0.02  # m   (was 0.05)
@@ -67,7 +73,8 @@ class Revo3HandScrewTactileXY96MixinCfg(Revo3HandScrewTactileXYMixinCfg):
     # ``action_scale`` = 1 mm, i.e. 0.02 m/s -- one workspace crossing takes
     # 0.75 s, the timescale of a single finger handover (coord_delta_h = 8
     # steps), instead of the previous 0.5 s for a five-times-larger workspace.
-    xy_action_scale_initial = 0.0004  # m per unit action (was 0.002)
+    # As with the workspace, initial == final: no Stage-1 ramp on this knob.
+    xy_action_scale_initial = 0.001  # m per unit action (was 0.0004, ramped)
     xy_action_scale_final = 0.001  # m per unit action (was 0.005)
     # Velocity clamp now coincides exactly with the action scale
     # (0.02 m/s * 0.05 s = 0.001 m = one full-action increment) instead of
@@ -122,33 +129,35 @@ class Revo3HandScrewTactileXY96MixinCfg(Revo3HandScrewTactileXYMixinCfg):
     xy_dgain = 600.0  # N*s/m      (was 200.0)
 
     # ------------------------------------------------------------------
-    # 4. Costs: references separated from clamps, plus two new terms
+    # 4. Costs: BIT-IDENTICAL to valvedriver_tactile_xy
     # ------------------------------------------------------------------
-    # Cost references normalize MEASURED motion and are deliberately looser than
-    # the commanded clamps above: a contact transient that shoves the stage must
-    # not produce a penalty the policy cannot avoid.  Absent, these fall back to
-    # the clamp limits, which is the legacy behaviour of ``valvedriver_tactile_xy``.
-    xy_velocity_cost_reference = 0.02  # m/s
-    xy_acceleration_cost_reference = 1.0  # m/s^2, 5x the commanded clamp
-    xy_jerk_reference = 10.0  # m/s^3 (was 40.0)
+    # This task is a controlled A/B of the stage MECHANICS (travel envelope,
+    # rate envelope, mount compliance).  The reward must therefore be the same
+    # function of the measured stage state as in ``valvedriver_tactile_xy``:
+    # same terms, same weights, same normalizers.  Nothing here may be tuned
+    # without breaking that comparison.
+    #
+    # Three of the normalizers used to be read straight off the clamp limits
+    # (``xy_velocity_limit``, ``xy_acceleration_limit``, ``xy_effort_limit``),
+    # which are MECHANICS knobs that this task deliberately changes.  They are
+    # therefore pinned here to the baseline's numeric values through explicit
+    # cost references, so tightening a clamp cannot silently re-weight a cost.
+    # The parent env falls back to the clamp limits when a reference is absent,
+    # which keeps every other task byte-for-byte unchanged.
+    xy_velocity_cost_reference = 0.15  # m/s   == valvedriver_tactile_xy's xy_velocity_limit
+    xy_acceleration_cost_reference = 8.0  # m/s^2 == its xy_acceleration_limit
+    xy_effort_cost_reference = 120.0  # N     == its xy_effort_limit
+    # power_reference = effort_cost_reference * velocity_cost_reference
+    #                 = 120.0 * 0.15 = 18.0, the baseline value.
+    xy_jerk_reference = 40.0  # m/s^3
 
     xy_velocity_penalty_scale = -0.05
     xy_acceleration_penalty_scale = -0.02
     xy_jerk_penalty_scale = -0.01
     xy_effort_penalty_scale = -0.05
     xy_power_penalty_scale = -0.02
-    # Boundary band widened from the last 10% to the outer half of the
-    # workspace, so leaving the neighbourhood of home is priced continuously
-    # rather than only at the very edge.
-    xy_boundary_penalty_scale = -0.10  # (was -0.05)
-    xy_boundary_margin = 0.5  # (was 0.10)
-    # NEW: chatter price.  ||a_t - a_{t-1}||^2 reaches 8 for a full per-step
-    # reversal on both axes, i.e. -0.4 reward, against an O(1) rotate reward.
-    xy_action_rate_penalty_scale = -0.05
-    # NEW: drift price.  mean((p / W)^2) is 1 at the boundary.  Together with the
-    # widened boundary band this is what makes "stay near home unless
-    # compensating" the default rather than a coincidence.
-    xy_displacement_penalty_scale = -0.10
+    xy_boundary_penalty_scale = -0.05
+    xy_boundary_margin = 0.10
 
     # ------------------------------------------------------------------
     # 5. Passive mount compliance (see xy_compliance.py)
@@ -164,17 +173,32 @@ class Revo3HandScrewTactileXY96MixinCfg(Revo3HandScrewTactileXYMixinCfg):
     xy_compliance_body_mass = 0.3  # kg per intermediate compliance body
     xy_compliance_body_inertia = 1.0e-3  # kg*m^2 diagonal
 
+    # ------------------------------------------------------------------
+    # 6. Stage-1 curriculum: none
+    # ------------------------------------------------------------------
+    # The follower enters Stage 1 with the whole travel/rate envelope already
+    # available.  Two independent switches enforce that, so neither a stale
+    # agent yaml nor a resumed checkpoint can re-introduce a ramp:
+    #   * ``xy_curriculum_ramp_steps = 0`` makes the trainer's progress latch
+    #     to 1.0 at the activation step (see ``curriculum_progress``), and
+    #   * ``*_initial == *_final`` above makes the interpolation constant, so
+    #     any progress value in [0, 1] resolves to the same numbers.
+    # The rationale is that the xy96 envelope IS the restriction: 15 mm of
+    # travel is 0.43 R, already far below what would let the stage orbit the
+    # handle, so easing into it only delays the behaviour being measured.
+    xy_curriculum_ramp_steps = 0
+
     def __post_init__(self):
         super().__post_init__()
         self._configure_xy_compliance()
 
     def _configure_xy_compliance(self):
         """Validate the compliance contract and attach its actuator groups."""
-        for name in ("xy_action_rate_penalty_scale", "xy_displacement_penalty_scale"):
-            value = float(getattr(self, name))
-            if value > 0.0:
-                raise ValueError(f"{name} ({value}) must be <= 0 (it is a cost)")
-        for name in ("xy_velocity_cost_reference", "xy_acceleration_cost_reference"):
+        for name in (
+            "xy_velocity_cost_reference",
+            "xy_acceleration_cost_reference",
+            "xy_effort_cost_reference",
+        ):
             value = float(getattr(self, name))
             if value <= 0.0:
                 raise ValueError(f"{name} ({value}) must be positive")

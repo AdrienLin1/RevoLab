@@ -5,12 +5,19 @@
 #       --algo HierarchicalPPO --train_cfg valvedriver_tactile_frame813_xy96
 #
 # Every learning hyper-parameter below is IDENTICAL to
-# valvedriver_tactile_frame813_xy.yaml. The xy96 task differs only in the
-# environment (travel envelope, rate envelope, mount compliance, stage costs),
-# so a run of this config against a run of the xy config is a clean A/B of the
-# stage design and nothing else. The follower observation is still 159-dim and
-# the master interface is untouched, so the same 21-D Stage-1 checkpoint loads
-# strictly through --master_checkpoint.
+# valvedriver_tactile_frame813_xy.yaml, and so is the environment's REWARD. The
+# xy96 task differs only in the stage MECHANICS (travel envelope, rate envelope,
+# mount compliance), so a run of this config against a run of the xy config is a
+# clean A/B of the stage design and nothing else. Note that raw return is still
+# only comparable because the reward is identical -- compare physical metrics
+# (net rotation, success rate, handover recovery) regardless. The follower
+# observation is still 159-dim and the master interface is untouched, so the
+# same 21-D Stage-1 checkpoint loads strictly through --master_checkpoint.
+#
+# The three deliberate deviations from the baseline yaml are all SCHEDULE, not
+# learner tuning, and all live in the `hierarchical` block below:
+# joint_finetune_enable, activation_speed_threshold (1.1 rad/s, not 0.8) and
+# xy_curriculum_ramp_steps (0 -- no Stage-1 ramp). Label runs accordingly.
 
 algo: HierarchicalPPO
 tactile_layout: estimated_official
@@ -116,18 +123,27 @@ follower:
 hierarchical:
   # Stage 0 -> Stage 1 gate on the EMA of the per-rollout signed mean angular
   # velocity. This threshold is ONLY a curriculum trigger, never a reward gate.
-  activation_speed_threshold: 0.8
+  # Raised from the baseline 0.8 to 1.1 rad/s: the follower is handed a hand
+  # policy that already turns the valve fast, so the stage is asked to trim a
+  # competent gait instead of propping up a marginal one.
+  activation_speed_threshold: 1.1
   activation_patience: 5
   activation_speed_ema_beta: 0.9
-  # Stage 1 -> Stage 2. Disabled here on purpose. The design goal of xy96 is
-  # "the hand turns the valve, the end effector only trims", so the hand policy
-  # is held fixed and every measured change must come from the follower. Enable
-  # it only as a separate, explicitly labelled run once the follower-only
-  # numbers are in.
-  joint_finetune_enable: false
+  # Stage 1 -> Stage 2. With this OFF the hand policy stays frozen and every
+  # measured change is attributable to the follower alone, which is the clean
+  # ablation. With it ON the two policies co-adapt, which is what a frozen hand
+  # provably cannot do -- a frozen hand can only be disturbed by stage motion,
+  # never exploit it. Whichever is used, label the run accordingly: the two are
+  # different experiments, not different tunings of one.
+  joint_finetune_enable: True
   follower_only_steps: 50000000
   master_finetune_lr_scale: 0.07
   master_kl_coef: 1.0
   freeze_tactile_encoder_in_joint_finetune: true
-  # Workspace / action-scale ramp measured from the Stage-1 activation step.
-  xy_curriculum_ramp_steps: 20000000
+  # Stage-1 workspace / action-scale ramp DISABLED (0 -> progress latches to
+  # 1.0 the moment Stage 1 activates). The follower gets its full travel and
+  # rate envelope immediately; the xy96 envelope is already the tight one
+  # (15 mm / 1 mm per unit action), so there is nothing left to ease into.
+  # The env cfg additionally pins initial == final, so neither knob is
+  # curriculum-limited even if a resumed checkpoint reports progress < 1.
+  xy_curriculum_ramp_steps: 0

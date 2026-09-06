@@ -190,44 +190,119 @@ def test_crossing_the_workspace_takes_about_one_gait_cycle(xy96_attrs):
 # ----------------------------------------------------------------------
 
 
-def test_cost_references_are_separated_from_the_commanded_clamps(xy96_attrs):
-    """A contact transient the policy never commanded must not dominate the cost."""
-    assert float(xy96_attrs["xy_acceleration_cost_reference"]) > float(
-        xy96_attrs["xy_acceleration_limit"]
-    )
-    assert float(xy96_attrs["xy_velocity_cost_reference"]) == pytest.approx(
-        float(xy96_attrs["xy_velocity_limit"])
-    )
+def _effective(xy_attrs: dict, xy96_attrs: dict) -> dict:
+    """Return xy96's effective config: baseline values overridden by its own."""
+    merged = dict(xy_attrs)
+    merged.update(xy96_attrs)
+    return merged
 
 
-def test_every_stage_cost_scale_is_non_positive(xy96_attrs):
-    for name, value in xy96_attrs.items():
+def _reward_parameters(attrs: dict) -> dict:
+    """Return exactly the quantities that enter ``_compute_xy_stage_reward``.
+
+    Mirrors the parent env: the three normalizers fall back to their clamp
+    limits unless the task pins an explicit cost reference.
+    """
+    velocity = float(attrs.get("xy_velocity_cost_reference", attrs["xy_velocity_limit"]))
+    acceleration = float(
+        attrs.get("xy_acceleration_cost_reference", attrs["xy_acceleration_limit"])
+    )
+    effort = float(attrs.get("xy_effort_cost_reference", attrs["xy_effort_limit"]))
+    return {
+        "velocity_reference": velocity,
+        "acceleration_reference": acceleration,
+        "effort_reference": effort,
+        "jerk_reference": float(attrs["xy_jerk_reference"]),
+        "power_reference": effort * velocity,
+        "boundary_margin": float(attrs["xy_boundary_margin"]),
+        "scale_velocity": float(attrs["xy_velocity_penalty_scale"]),
+        "scale_acceleration": float(attrs["xy_acceleration_penalty_scale"]),
+        "scale_jerk": float(attrs["xy_jerk_penalty_scale"]),
+        "scale_effort": float(attrs["xy_effort_penalty_scale"]),
+        "scale_power": float(attrs["xy_power_penalty_scale"]),
+        "scale_boundary": float(attrs["xy_boundary_penalty_scale"]),
+        "high_speed_enable": bool(attrs["high_speed_reward_enable"]),
+        "high_speed_target": float(attrs["high_speed_target"]),
+        "high_speed_scale": float(attrs["high_speed_reward_scale"]),
+    }
+
+
+def test_the_reward_is_identical_to_the_baseline_task(xy96_attrs, xy_attrs):
+    """xy96 is a controlled A/B of the stage MECHANICS: the reward must not move.
+
+    Every term, weight and normalizer of the stage cost has to match
+    ``valvedriver_tactile_xy``. Three normalizers are read off clamp limits that
+    this task deliberately tightens, so they are pinned through explicit cost
+    references; this test is what stops a mechanics change from silently
+    re-weighting the reward.
+    """
+    baseline = _reward_parameters(xy_attrs)
+    variant = _reward_parameters(_effective(xy_attrs, xy96_attrs))
+    differing = {k: (baseline[k], variant[k]) for k in baseline if baseline[k] != variant[k]}
+    assert not differing, f"reward parameters drifted from valvedriver_tactile_xy: {differing}"
+
+
+def test_tightening_a_clamp_cannot_re_weight_a_cost(xy96_attrs, xy_attrs):
+    """The pinned references must survive the mechanics changes around them."""
+    effective = _effective(xy_attrs, xy96_attrs)
+    # The clamps really did tighten ...
+    for name in ("xy_velocity_limit", "xy_acceleration_limit", "xy_effort_limit"):
+        assert float(effective[name]) < float(xy_attrs[name]), name
+    # ... while the cost normalizers stayed at the baseline's numbers.
+    assert float(effective["xy_velocity_cost_reference"]) == float(xy_attrs["xy_velocity_limit"])
+    assert float(effective["xy_acceleration_cost_reference"]) == float(
+        xy_attrs["xy_acceleration_limit"]
+    )
+    assert float(effective["xy_effort_cost_reference"]) == float(xy_attrs["xy_effort_limit"])
+
+
+def test_no_extra_cost_term_was_added(xy96_attrs):
+    """No penalty scale may exist here that the baseline task does not have."""
+    for name in ("xy_action_rate_penalty_scale", "xy_displacement_penalty_scale"):
+        assert name not in xy96_attrs, f"{name} would make the reward differ from xy"
+
+
+def test_every_stage_cost_scale_is_non_positive(xy96_attrs, xy_attrs):
+    for name, value in _effective(xy_attrs, xy96_attrs).items():
         if name.startswith("xy_") and name.endswith("_penalty_scale"):
             assert float(value) <= 0.0, f"{name} = {value} is a reward, not a cost"
 
 
-def test_drift_and_chatter_are_priced_at_all(xy96_attrs):
-    assert float(xy96_attrs["xy_action_rate_penalty_scale"]) < 0.0
-    assert float(xy96_attrs["xy_displacement_penalty_scale"]) < 0.0
-    # The boundary band must start well inside the workspace; the baseline only
-    # charged for the outer 10%, so drifting to 90% of the workspace was free.
-    assert float(xy96_attrs["xy_boundary_margin"]) >= 0.4
-
-
-def test_the_env_adds_the_two_new_terms_on_top_of_the_parent_costs():
-    source = XY96_ENV_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(source)
+def test_the_env_override_leaves_the_stage_reward_untouched():
+    """The env may log diagnostics, but must return the parent cost verbatim."""
+    tree = ast.parse(XY96_ENV_PATH.read_text(encoding="utf-8"))
     reward = next(
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_compute_xy_stage_reward"
     )
     body = ast.unparse(reward)
-    assert "super()._compute_xy_stage_reward()" in body
-    assert "xy_action_rate_penalty_scale" in body
-    assert "xy_displacement_penalty_scale" in body
+    assert "stage_reward = super()._compute_xy_stage_reward()" in body
+    assert "return stage_reward" in body
+    # No arithmetic on the returned value, and no rewriting of the parent's
+    # reward bookkeeping.
+    for forbidden in (
+        "stage_reward +",
+        "stage_reward -",
+        "stage_reward *",
+        "xy_cost/",
+        "xy_penalty/",
+        "xy/stage_reward",
+    ):
+        assert forbidden not in body, f"reward override must not contain {forbidden!r}"
     # Finger costs stay finger-only, exactly as in the parent task.
     assert "actuated_dof_indices" not in body
+
+
+def test_the_env_still_reports_the_oscillation_diagnostics():
+    """Removing the penalties must not remove the ability to SEE the behaviour."""
+    body = XY96_ENV_PATH.read_text(encoding="utf-8")
+    for tag in (
+        "xy/action_reversal_rate",
+        "xy/action_rate_sq",
+        "xy/normalized_displacement_sq",
+    ):
+        assert tag in body, tag
 
 
 # ----------------------------------------------------------------------
@@ -314,14 +389,24 @@ def test_the_env_never_commands_the_passive_joints():
 
 
 def test_xy96_yaml_differs_from_xy_only_in_documented_ways():
-    """An xy96 vs xy run must be an A/B of the environment, not of the learner."""
+    """An xy96 vs xy run must be an A/B of the environment, not of the learner.
+
+    Three hierarchical keys are allowed to move, and each is a schedule
+    decision rather than a learner tuning: whether Stage 2 runs at all, how
+    fast the hand must already turn the valve before the stage is unfrozen,
+    and whether the Stage-1 envelope is ramped or handed over whole.
+    """
     xy96 = yaml.safe_load(XY96_YAML.read_text(encoding="utf-8"))
     xy = yaml.safe_load(XY_YAML.read_text(encoding="utf-8"))
     assert xy96["algo"] == xy["algo"] == "HierarchicalPPO"
     assert xy96["network"] == xy["network"]
     assert xy96["ppo"] == xy["ppo"]
     assert xy96["follower"] == xy["follower"]
-    allowed_hierarchical_diffs = {"joint_finetune_enable"}
+    allowed_hierarchical_diffs = {
+        "joint_finetune_enable",
+        "activation_speed_threshold",
+        "xy_curriculum_ramp_steps",
+    }
     differing = {
         key
         for key in set(xy96["hierarchical"]) | set(xy["hierarchical"])
@@ -330,6 +415,42 @@ def test_xy96_yaml_differs_from_xy_only_in_documented_ways():
     assert differing <= allowed_hierarchical_diffs, differing
 
 
-def test_xy96_runs_follower_only_by_default():
+def test_stage_one_activates_only_above_the_raised_speed_gate():
+    """The Stage 0 -> Stage 1 gate is pinned: 1.1 rad/s, not the baseline 0.8."""
     xy96 = yaml.safe_load(XY96_YAML.read_text(encoding="utf-8"))
-    assert xy96["hierarchical"]["joint_finetune_enable"] is False
+    threshold = float(xy96["hierarchical"]["activation_speed_threshold"])
+    assert threshold == pytest.approx(1.1)
+    assert int(xy96["hierarchical"]["activation_patience"]) >= 1
+
+
+def test_stage_one_hands_over_the_full_envelope_with_no_curriculum(xy96_attrs):
+    """No workspace / action-scale ramp: two independent switches enforce it."""
+    xy96 = yaml.safe_load(XY96_YAML.read_text(encoding="utf-8"))
+    assert int(xy96["hierarchical"]["xy_curriculum_ramp_steps"]) == 0
+    assert int(xy96_attrs["xy_curriculum_ramp_steps"]) == 0
+    # A zero-length ramp latches progress to its final value immediately.
+    assert xy_stage.curriculum_progress(0, 0, 0) == 1.0
+    # ... and the interpolation is constant anyway, at every progress value.
+    for progress in (0.0, 0.25, 1.0):
+        assert xy_stage.curriculum_value(
+            float(xy96_attrs["xy_workspace_initial"]),
+            float(xy96_attrs["xy_workspace_final"]),
+            progress,
+        ) == pytest.approx(float(xy96_attrs["xy_workspace_final"]))
+        assert xy_stage.curriculum_value(
+            float(xy96_attrs["xy_action_scale_initial"]),
+            float(xy96_attrs["xy_action_scale_final"]),
+            progress,
+        ) == pytest.approx(float(xy96_attrs["xy_action_scale_final"]))
+
+
+def test_the_joint_finetune_switch_is_explicit():
+    """Stage 2 on/off is a live experimental knob; only require it be declared.
+
+    Its value is deliberately NOT pinned here: whether a given run stays in
+    follower-only mode or goes on to joint fine-tuning is an experiment
+    decision, and the parity test above already allows it to be the single
+    hierarchical difference against the baseline yaml.
+    """
+    xy96 = yaml.safe_load(XY96_YAML.read_text(encoding="utf-8"))
+    assert isinstance(xy96["hierarchical"]["joint_finetune_enable"], bool)

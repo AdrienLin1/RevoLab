@@ -431,9 +431,11 @@ class Revo3HandScrewTactileXYEnv(Revo3HandScrewTactileEnv):
         power = effort * velocity
 
         # Cost references normalize MEASURED motion. They default to the
-        # commanded clamp limits, which is the historical behaviour, but a task
-        # may separate the two so a contact transient the policy never
-        # commanded cannot dominate the penalty; see valvedriver_tactile_xy96.
+        # commanded clamp limits, which is the historical behaviour of every
+        # task, but a variant that changes a clamp for MECHANICAL reasons may
+        # pin the corresponding cost reference instead, so that retuning the
+        # hardware envelope cannot silently re-weight the reward; see
+        # valvedriver_tactile_xy96.
         velocity_limit = max(
             float(getattr(self.cfg, "xy_velocity_cost_reference", self.cfg.xy_velocity_limit)),
             1.0e-6,
@@ -449,7 +451,10 @@ class Revo3HandScrewTactileXYEnv(Revo3HandScrewTactileEnv):
             1.0e-6,
         )
         jerk_reference = max(float(self.cfg.xy_jerk_reference), 1.0e-6)
-        effort_limit = max(float(self.cfg.xy_effort_limit), 1.0e-6)
+        effort_limit = max(
+            float(getattr(self.cfg, "xy_effort_cost_reference", self.cfg.xy_effort_limit)),
+            1.0e-6,
+        )
         power_reference = max(effort_limit * velocity_limit, 1.0e-6)
 
         saturation = xy_boundary_saturation(
