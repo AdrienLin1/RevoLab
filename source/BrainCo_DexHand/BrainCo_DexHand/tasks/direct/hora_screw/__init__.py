@@ -252,3 +252,31 @@ gym.register(
         ),
     },
 )
+
+# Fine-compensation variant of the XY stage: a travel/rate envelope sized so the
+# end effector trims the hand instead of being able to row the valve around, and
+# a mount that is a spring rather than a weld in world Z / roll / pitch / yaw.
+# The action layout (21 + 2) and the 159-dim follower observation are unchanged.
+gym.register(
+    id="BrainCo-Direct-Revo3-HoraValveDriverTactileXY96-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_xy96_env:Revo3HandScrewTactileXY96Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.revo3_hand_screw_tactile_xy96_env_cfg:"
+            "Revo3HandVavleDriverTactileXY96EnvCfg"
+        ),
+    },
+)
+
+gym.register(
+    id="RevoHoraValveDriverTactileXY96-v0",
+    entry_point=f"{__name__}.revo3_hand_screw_tactile_xy96_env:Revo3HandScrewTactileXY96Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.revo3_hand_screw_tactile_xy96_env_cfg:"
+            "Revo3HandVavleDriverTactileXY96EnvCfg"
+        ),
+    },
+)

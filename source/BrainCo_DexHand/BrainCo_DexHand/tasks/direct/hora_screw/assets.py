@@ -346,3 +346,65 @@ SCREW_VALVE_DRIVER_25_CFG = _make_screw_cfg(
 SCREW_VALVE_DRIVER_40_CFG = _make_screw_cfg(
     _VALVE_DRIVER_40_URDF, VAVLE_DRIVER_INIT_POS, "valve_to_shaft"
 )
+
+
+def make_xy_compliance_hand_cfg(base_cfg: ArticulationCfg, axes) -> ArticulationCfg:
+    """Attach the passive mount-compliance actuator groups to a stage hand cfg.
+
+    Unlike the fingers and the XY stage -- which run with zero implicit PD and
+    are driven by explicit, effort-limited torques from the environment -- the
+    compliance joints ARE their implicit PD.  Their position target stays at the
+    authored zero forever, so ``stiffness``/``damping`` act as a spring-damper
+    pulling the mount back to its neutral pose.  The environment never commands
+    them; it only randomizes their gains at reset.
+
+    Args:
+        base_cfg: Hand configuration that already owns the XY stage.
+        axes: Enabled :class:`ComplianceAxisSpec` entries, in chain order.
+
+    Returns:
+        A new ``ArticulationCfg`` with the compliance groups and zero reset pose.
+
+    Raises:
+        ValueError: If a compliance actuator group already exists.
+    """
+    from .xy_compliance import (
+        COMPLIANCE_ANGULAR_ACTUATOR_GROUP,
+        COMPLIANCE_LINEAR_ACTUATOR_GROUP,
+    )
+
+    if not axes:
+        return base_cfg
+
+    joint_pos = dict(base_cfg.init_state.joint_pos)
+    for axis in axes:
+        joint_pos[axis.joint_name] = 0.0
+    actuators = dict(base_cfg.actuators)
+
+    groups = {
+        COMPLIANCE_LINEAR_ACTUATOR_GROUP: [axis for axis in axes if axis.is_prismatic],
+        COMPLIANCE_ANGULAR_ACTUATOR_GROUP: [axis for axis in axes if not axis.is_prismatic],
+    }
+    for group_name, group_axes in groups.items():
+        if not group_axes:
+            continue
+        if group_name in actuators:
+            raise ValueError(f"Actuator group {group_name!r} already exists on the base hand")
+        # Nominal gains are the per-axis mean; the environment overwrites them
+        # per environment and per joint at reset, which is what actually decides
+        # the mount stiffness seen during training.
+        stiffness = sum(axis.stiffness for axis in group_axes) / len(group_axes)
+        damping = sum(axis.damping for axis in group_axes) / len(group_axes)
+        armature = max(axis.armature for axis in group_axes)
+        actuators[group_name] = ImplicitActuatorCfg(
+            joint_names_expr=[axis.joint_name for axis in group_axes],
+            effort_limit_sim=1.0e6,  # the spring itself is the only limit
+            stiffness=float(stiffness),
+            damping=float(damping),
+            friction=0.0,
+            armature=float(armature),
+        )
+    return base_cfg.replace(
+        init_state=base_cfg.init_state.replace(joint_pos=joint_pos),
+        actuators=actuators,
+    )

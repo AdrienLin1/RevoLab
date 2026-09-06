@@ -1,11 +1,16 @@
-# Hierarchical Stage-1 teacher (21-D hand master) + 2-D translation follower.
+# Hierarchical Stage-1 teacher (21-D hand master) + 2-D FINE-COMPENSATION
+# follower on a compliant mount (task `valvedriver_tactile_xy96`).
 #
-#   python scripts/hora/train.py --task valvedriver_tactile_xy \
-#       --algo HierarchicalPPO --train_cfg valvedriver_tactile_frame813_xy
+#   python scripts/hora/train.py --task valvedriver_tactile_xy96 \
+#       --algo HierarchicalPPO --train_cfg valvedriver_tactile_frame813_xy96
 #
-# The `network` and `ppo` sections are identical to
-# valvedriver_tactile_frame813.yaml so an existing 21-D Stage-1 checkpoint loads
-# strictly through --master_checkpoint. Only `follower` and `hierarchical` are new.
+# Every learning hyper-parameter below is IDENTICAL to
+# valvedriver_tactile_frame813_xy.yaml. The xy96 task differs only in the
+# environment (travel envelope, rate envelope, mount compliance, stage costs),
+# so a run of this config against a run of the xy config is a clean A/B of the
+# stage design and nothing else. The follower observation is still 159-dim and
+# the master interface is untouched, so the same 21-D Stage-1 checkpoint loads
+# strictly through --master_checkpoint.
 
 algo: HierarchicalPPO
 tactile_layout: estimated_official
@@ -114,9 +119,12 @@ hierarchical:
   activation_speed_threshold: 0.8
   activation_patience: 5
   activation_speed_ema_beta: 0.9
-  # Stage 1 -> Stage 2. Disabled by default: the run stays in follower-only mode,
-  # which is the clean ablation for "does 2-D translation raise the speed ceiling".
-  joint_finetune_enable: true
+  # Stage 1 -> Stage 2. Disabled here on purpose. The design goal of xy96 is
+  # "the hand turns the valve, the end effector only trims", so the hand policy
+  # is held fixed and every measured change must come from the follower. Enable
+  # it only as a separate, explicitly labelled run once the follower-only
+  # numbers are in.
+  joint_finetune_enable: false
   follower_only_steps: 50000000
   master_finetune_lr_scale: 0.07
   master_kl_coef: 1.0

@@ -60,6 +60,7 @@ parser.add_argument('--task', type=str, default='nutbolt',
                              'valvedriver_tactile', 'valvedriver_tactile25', 'valvedriver_tactile_40',
                              'vavledriver_tactile',
                              'valvedriver_tactile_xy',
+                             'valvedriver_tactile_xy96',
                              'valvedriver_tactile_xyyaw',
                              'valvedriver_tactile_yaw'])
 parser.add_argument('--algo', type=str, default='auto',
@@ -125,12 +126,13 @@ if not 0.0 <= args.tactile_binary_flip_prob <= 1.0:
 
 # Tasks whose hand additionally rides on a physical end-effector stage and are
 # therefore played back by the master/follower HierarchicalPPO agent.
-_XY_SCREW_TASKS = ('valvedriver_tactile_xy',)
+_XY_SCREW_TASKS = ('valvedriver_tactile_xy', 'valvedriver_tactile_xy96')
 _XYYAW_SCREW_TASKS = ('valvedriver_tactile_xyyaw',)
 _YAW_SCREW_TASKS = ('valvedriver_tactile_yaw',)
 _HIERARCHICAL_SCREW_TASKS = _XY_SCREW_TASKS + _XYYAW_SCREW_TASKS + _YAW_SCREW_TASKS
 _HIERARCHICAL_TRAIN_CFG = {
     'valvedriver_tactile_xy': 'valvedriver_tactile_frame813_xy',
+    'valvedriver_tactile_xy96': 'valvedriver_tactile_frame813_xy96',
     'valvedriver_tactile_xyyaw': 'valvedriver_tactile_frame813_xyyaw',
     'valvedriver_tactile_yaw': 'valvedriver_tactile_frame813_yaw',
 }
@@ -266,6 +268,12 @@ from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy_env imp
 from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy_env_cfg import (
     Revo3HandVavleDriverTactileXYEnvCfg,
 )
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy96_env import (
+    Revo3HandScrewTactileXY96Env,
+)
+from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xy96_env_cfg import (
+    Revo3HandVavleDriverTactileXY96EnvCfg,
+)
 from BrainCo_DexHand.tasks.direct.hora_screw.revo3_hand_screw_tactile_xyyaw_env import (
     Revo3HandScrewTactileXYYawEnv,
 )
@@ -293,6 +301,7 @@ _SCREW_ENV_CFG = {
     'valvedriver_tactile_40': Revo3HandValveDriver40TactileEnvCfg,
     'vavledriver_tactile': Revo3HandVavleDriverTactileEnvCfg,
     'valvedriver_tactile_xy': Revo3HandVavleDriverTactileXYEnvCfg,
+    'valvedriver_tactile_xy96': Revo3HandVavleDriverTactileXY96EnvCfg,
     'valvedriver_tactile_xyyaw': Revo3HandVavleDriverTactileXYYawEnvCfg,
     'valvedriver_tactile_yaw': Revo3HandVavleDriverTactileYawEnvCfg,
 }
@@ -300,6 +309,7 @@ _SCREW_ENV_CFG = {
 # Environment class per hierarchical stage task.
 _HIERARCHICAL_ENV_CLASS = {
     'valvedriver_tactile_xy': Revo3HandScrewTactileXYEnv,
+    'valvedriver_tactile_xy96': Revo3HandScrewTactileXY96Env,
     'valvedriver_tactile_xyyaw': Revo3HandScrewTactileXYYawEnv,
     'valvedriver_tactile_yaw': Revo3HandScrewTactileYawEnv,
 }

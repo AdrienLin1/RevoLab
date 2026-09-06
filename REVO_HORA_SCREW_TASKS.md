@@ -4,21 +4,48 @@
 `valvedriver_tactile_frame813.yaml` 显式启用新增的结构化 Stage1 Teacher。触觉
 screw/valve 任务默认使用 **`tactile_layout: estimated_official`**（真实物理节点分布）。
 
-## 任务
+本文档分四部分：
 
-| CLI `--task` | 说明 |
+| 章节 | 内容 |
 |---|---|
-| `nutbolt_tactile` | 三指螺母 |
-| `screwdriver_tactile` | 四指螺丝刀 |
-| `valvedriver_tactile` | 五指、名义半径 35 mm 阀门 |
-| `valvedriver_tactile25` | 五指、名义半径 25 mm 阀门 |
-| `valvedriver_tactile_40` | 五指、名义半径 40 mm 阀门 |
-| `rotate_ball_tactile` / `rotate_cylinder_tactile` | 连续旋转触觉任务 |
-| `valvedriver_tactile_xy` | 五指 35 mm 阀门 + 二维物理平移台（层级主从策略，23 维动作） |
-| `valvedriver_tactile_xyyaw` | 同上 + 末端 yaw 旋转关节（层级主从策略，24 维动作） |
-| `valvedriver_tactile_yaw` | 只有末端 yaw、无平移的消融任务（层级主从策略，22 维动作） |
+| [1. 任务总览](#1-任务总览) | 任务清单、三条训练路线怎么选 |
+| [2. 扁平任务（PPO / ProprioAdapt）](#2-扁平任务ppo--proprioadapt) | MLP 教师、Frame813 教师、DAgger 学生、连续旋转 |
+| [3. 层级主从策略（HierarchicalPPO）](#3-层级主从策略hierarchicalppo) | 灵巧手 + 机械臂末端自由度：XY / XY+yaw / 纯 yaw |
+| [4. 附录](#4-附录) | Smoke 配置、回放、回归测试、相关文档 |
 
-## Stage1：MLP Force Oracle
+---
+
+## 1. 任务总览
+
+### 1.1 任务清单
+
+| CLI `--task` | 说明 | 算法 | 动作维度 |
+|---|---|---|---:|
+| `nutbolt_tactile` | 三指螺母 | PPO / ProprioAdapt | 21 |
+| `screwdriver_tactile` | 四指螺丝刀 | PPO / ProprioAdapt | 21 |
+| `valvedriver_tactile` | 五指、名义半径 35 mm 阀门 | PPO / ProprioAdapt | 21 |
+| `valvedriver_tactile25` | 五指、名义半径 25 mm 阀门 | PPO / ProprioAdapt | 21 |
+| `valvedriver_tactile_40` | 五指、名义半径 40 mm 阀门 | PPO / ProprioAdapt | 21 |
+| `rotate_ball_tactile` / `rotate_cylinder_tactile` | 连续旋转触觉任务 | PPO / ProprioAdapt | 21 |
+| `valvedriver_tactile_xy` | 五指 35 mm 阀门 + 二维物理平移台（层级主从策略，23 维动作） | **HierarchicalPPO** | 23 |
+| `valvedriver_tactile_xyyaw` | 同上 + 末端 yaw 旋转关节（层级主从策略，24 维动作） | **HierarchicalPPO** | 24 |
+| `valvedriver_tactile_yaw` | 只有末端 yaw、无平移的消融任务（层级主从策略，22 维动作） | **HierarchicalPPO** | 22 |
+
+### 1.2 三条训练路线
+
+| 想做什么 | 去哪一节 |
+|---|---|
+| 训练一个普通的 21 维手内策略（教师） | [2.1](#21-stage1mlp-force-oracle) 或 [2.2](#22-stage1frame813-结构化触觉-teacher) |
+| 把教师蒸馏成可部署的学生 | [2.3](#23-stage2tactiledagger-学生) |
+| 验证"给末端加自由度能否提高阀门旋转速度" | [3](#3-层级主从策略hierarchicalppo) |
+
+三个层级任务的动作空间大于 21 维，**必须**配 `--algo HierarchicalPPO`；反之该算法也只接受这三个任务。
+
+---
+
+## 2. 扁平任务（PPO / ProprioAdapt）
+
+### 2.1 Stage1：MLP Force Oracle
 
 ```bash
 python scripts/hora/train.py --task valvedriver_tactile \
@@ -55,7 +82,7 @@ python scripts/hora/play.py \
 - `ppo.priv_info_dim` 会由 `train.py` 按 env 自动同步（无需手填物理节点维度）
 - 输出：`outputs/hora/revo3_right/<run>/stage1_nn/best.pth`
 
-## Stage1：Frame813 结构化触觉 Teacher（新增）
+### 2.2 Stage1：Frame813 结构化触觉 Teacher
 
 新增配置：
 
@@ -72,7 +99,7 @@ network:
     type: finger_attention_gru
 ```
 
-### 修改概要
+#### 2.2.1 修改概要
 
 - 每帧每个物理节点从原始 10 通道中选取 `b、d、Fn、Ft1、Ft2`，再加入固定物理坐标
   `u、v`，形成 `[u,v,b,d,Fn,Ft1,Ft2]` 七维节点输入。
@@ -93,7 +120,7 @@ network:
 - rotation 任务不再向 `priv_info[:,8]` 写入 object-size 数据，基础特权严格保持 8 维，
   详细触觉从该位置开始并由环境 observation 更新。
 
-### 主要代码位置
+#### 2.2.2 主要代码位置
 
 - Teacher 编码器、Actor 融合和 checkpoint 校验：
   [`models.py`](source/BrainCo_DexHand/BrainCo_DexHand/algo/hora/models/models.py)
@@ -110,7 +137,7 @@ network:
   [`test_hora_finger_attention_gru_teacher.py`](tests/test_hora_finger_attention_gru_teacher.py)、
   [`test_hora_frame813_config.py`](tests/test_hora_frame813_config.py)
 
-### 任务维度
+#### 2.2.3 任务维度
 
 所有任务的公开 observation 都是 `3 × 47 = 141` 维。
 
@@ -143,7 +170,7 @@ network:
 `ppo.priv_info_dim` 同步为任务真实值，并把活动手指、节点数、触觉帧宽和历史长度写入
 运行配置。
 
-### Stage-1 训练
+#### 2.2.4 Stage-1 训练
 
 新结构必须从头训练，不要传入已有 MLP Teacher 的 `--checkpoint`。
 
@@ -176,7 +203,7 @@ python scripts/hora/train.py \
 
 将 `TASK` 和 `OUTPUT_NAME` 替换为上表任意一行即可训练其它六个任务。
 
-### Stage-1 checkpoint 测试
+#### 2.2.5 Stage-1 checkpoint 测试
 
 可以用训练入口执行确定性测试：
 
@@ -211,7 +238,7 @@ python scripts/hora/play.py \
   --headless
 ```
 
-### Stage2：使用 Frame813 Teacher 生成 DAgger 标签
+#### 2.2.6 Stage2：使用 Frame813 Teacher 生成 DAgger 标签
 
 ```bash
 TASK=nutbolt_tactile
@@ -228,7 +255,7 @@ python scripts/hora/train.py \
   --headless
 ```
 
-### 相关回归测试
+#### 2.2.7 相关回归测试
 
 ```bash
 PYTHONPATH=source/BrainCo_DexHand PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
@@ -239,7 +266,7 @@ python -m pytest -q \
   tests/test_hora_tactile_rotate.py
 ```
 
-## Stage2：TactileDAgger 学生
+### 2.3 Stage2：TactileDAgger 学生
 
 ```bash
 python scripts/hora/train.py --task valvedriver_tactile --algo ProprioAdapt \
@@ -254,7 +281,7 @@ python scripts/hora/train.py --task valvedriver_tactile --algo ProprioAdapt \
 - GRU 变体：`--train_cfg Revo3HandScrewTactileGRU`
 - 损失：动作均值 DAgger（`MSE(student μ, teacher μ)`）
 
-## 连续旋转任务
+### 2.4 连续旋转任务
 
 Stage1 / Stage2 分别使用：
 
@@ -269,12 +296,77 @@ python scripts/hora/train.py --task rotate_cylinder_tactile \
   --train_cfg Revo3HandTactileRotate --num_envs 4096 --headless
 ```
 
-## 层级主从策略：灵巧手 + 二维机械臂平移（新增）
+---
 
-用于验证"末端二维平移是否能提高阀门持续旋转速度上限"。原 `valvedriver_tactile`
-任务、`PPO`/`ProprioAdapt` 路径、已有 checkpoint 格式全部保持不变。
+## 3. 层级主从策略（HierarchicalPPO）
 
-### 物理资产
+一个 **21 维灵巧手 master** + 一个 **D 维机械臂末端 follower**，两者从同一个状态
+`s_t` 决策，合并成一个动作交给唯一一次 `env.step`。共三个任务：
+
+| 任务 | 末端自由度 D | 关节 | 环境动作 | follower 观测 | 章节 |
+|---|---:|---|---:|---:|---|
+| `valvedriver_tactile_xy` | 2 | X / Y 平移 | 23 | 159 | [3.2](#32-valvedriver_tactile_xy二维平移) |
+| `valvedriver_tactile_xyyaw` | 3 | X / Y 平移 + yaw | 24 | 164 | [3.3](#33-valvedriver_tactile_xyyaw--_yaw末端-yaw) |
+| `valvedriver_tactile_yaw` | 1 | 仅 yaw | 22 | 154 | [3.3](#33-valvedriver_tactile_xyyaw--_yaw末端-yaw) |
+
+原 `valvedriver_tactile` 任务、`PPO`/`ProprioAdapt` 路径、已有 checkpoint 格式
+全部保持不变。
+
+### 3.1 共同框架
+
+三个任务共用同一个 `HierarchicalPPO` 状态机、同一套激活门限与 checkpoint 契约。
+
+#### 3.1.1 三阶段课程
+
+| Stage | master | follower | 末端动作 | workspace / action scale |
+|---|---|---|---|---|
+| 0 `stage0_master` | 正常 PPO 训练 | 不采样、不更新 | 恒为零 | initial（不生效） |
+| 1 `stage1_follower` | 权重与输入归一化全部冻结 | 独立 PPO 训练 | 采样 | 在 ramp 内线性放开 |
+| 2 `stage2_joint_finetune`（可选） | actor trunk/head/critic 解冻，触觉编码器仍冻结，lr = follower_lr × 0.07，并对 Stage-1 起始策略加 KL | 继续训练 | 采样 | 继续 ramp |
+
+- Stage 0 → 1 的门限是**每个 rollout 有符号平均角速度的 EMA 严格大于 0.8 rad/s**，
+  且连续满足 `activation_patience`（默认 5）个 epoch。**激活后永久锁存**，速度回落
+  不会退回 Stage 0。0.8 rad/s 只用于课程触发，**从不作为奖励门控**。
+- Stage 1 → 2 由 `hierarchical.joint_finetune_enable` 控制。XY 基线默认 `false`
+  （即纯 follower 消融实验）；两个 yaw 任务默认 `true`，理由见 [3.3.5](#335-三阶段课程yaw-任务的差异)。
+- Stage 2 中 master 与 follower 在**同一个 rollout** 内各自执行 optimizer step，
+  共享 team reward，但保留各自的 PPO ratio、value、optimizer 与 normalizer；
+  follower loss 不会反传进 master。
+
+#### 3.1.2 输出与 checkpoint
+
+输出目录：`outputs/hora/revo3_right/<run>/hier_nn/{best_reward,best_speed,last}.pth`，
+TensorBoard 在 `hier_tb/`。`best_speed` 依据**平滑角速度**（`activation_speed_ema`）
+选择，不是 episode reward。
+
+- checkpoint format marker 未改动（仍是 `hora_hierarchical_ppo_v1`），payload 新增
+  可选字段：`master_action_dim`、`follower_action_dim`、`follower_obs_dim`、
+  `env_action_dim`、`stage_dof_names`、`stage_curriculum_progress/ramp_steps`。
+- 老 checkpoint 缺这些字段时，从 follower 权重形状反推维度，同样能被正确识别。
+- **维度不匹配时明确报错**：把 2 维 XY follower checkpoint 交给 3 维任务会得到
+  `follower_action_dim 2 != 3 / follower_obs_dim 159 != 164` 的显式错误。
+  **没有**权重迁移器，也**绝不**用 `strict=False` 静默半加载。
+- 已有的普通 21 维 master checkpoint 仍可通过 `--master_checkpoint` 严格热启动。
+
+#### 3.1.3 三种 checkpoint 用法
+
+| 参数 | 语义 |
+|---|---|
+| `--master_checkpoint` | 只加载 21 维 master 权重 + 归一化；**不是** resume，课程从 Stage 0 重新开始 |
+| `--checkpoint` | 完整层级恢复：模型 + 优化器 + 课程状态 |
+| `--checkpoint ... --test` | 确定性回放（无统计输出，跑到手动中断） |
+
+> 改过 yaw 物理参数（力矩上限、workspace）之后**不要**用 `--checkpoint` 续训旧 run：
+> 维度兼容所以不会报错，但旧 follower 是在另一套物理下学出来的，会静默给出夹生结果。
+> 想保留 master 进度请改用 `--master_checkpoint`。
+
+---
+
+### 3.2 `valvedriver_tactile_xy`（二维平移）
+
+用于验证"末端二维平移是否能提高阀门持续旋转速度上限"。
+
+#### 3.2.1 物理资产
 
 `valvedriver_tactile_xy` 在场景克隆前，把两个**真实 prismatic joint** 写进手的
 articulation（`Revo3HandScrewTactileXYEnv._author_robot_stage_overrides`）：
@@ -293,10 +385,10 @@ world（被资产自带的全局 fixed root joint 固定）
   与掌心向下的抓取姿态无关。
 - 全流程**不存在** step 期间的 root teleport：`write_root_*_to_sim` 只在 reset 调用
   （与原任务一致），水平运动完全由有限力矩的 PD 驱动产生。
-- 滑台使用独立 actuator 组 `xy_stage`（`stage_.*_joint`），不会被 `right_.*` 手指
-  actuator 误匹配。
+- 滑台使用独立 actuator 组 `xy_stage`（表达式 `stage_[xy]_joint`），不会被 `right_.*`
+  手指 actuator 误匹配，也不会误匹配到 yaw 任务新增的 `stage_yaw_joint`。
 
-### 动作与观测
+#### 3.2.2 动作与观测
 
 ```text
 action[:, :21]   -> 手指关节（原路径，未改动）
@@ -308,8 +400,10 @@ action[:, 21:23] -> XY 滑台（位置目标增量）
 - follower 观测严格 159 维：
   `21 executed_hand_action + 128 tactile latent + 2 pos + 2 vel + 2 target +
   2 prev_action + 2 workspace_margin`。
+- Stage 1 的 workspace 在 `xy_curriculum_ramp_steps` 内从 **1 cm 线性放开到 5 cm**，
+  action scale 同步从 0.002 m 到 0.005 m。
 
-### 训练
+#### 3.2.3 训练
 
 ```bash
 # 从零开始（Stage 0 先训 master，速度 EMA > 0.8 rad/s 连续 5 个 epoch 后自动激活 follower）
@@ -353,6 +447,8 @@ python scripts/hora/train.py \
   --num_envs 16 --headless
 ```
 
+#### 3.2.4 回放与评估
+
 ```bash
 # 回放 / 评估（确定性主从策略，无统计输出，一直跑到手动中断）
 python scripts/hora/train.py \
@@ -382,32 +478,14 @@ action scale 推给环境，因此回放的物理条件与训练结束时一致�
 
 - `[XY SUMMARY]`：平移台平均 / 最大位移（mm）、平均速度（mm/s）、目标跟踪误差、
   workspace margin（1 = 中心，0 = 边界）、平均 `|action|` 与动作饱和比例；
-- `[XY DIAGNOSTICS]`：环境自己记录的全部 `xy/*`、`xy_penalty/*`、`curriculum/xy*`
+- `[STAGE DIAGNOSTICS]`：环境自己记录的全部 `xy/*`、`xy_penalty/*`、`curriculum/*`
   标量在整个回放上的均值。
 
 `play.py` 的触觉可视化（`--tactile_gui_vis`、`--visualize_tactile`）与鲁棒性扰动
 （`--tactile_force_scale`、`--tactile_spatial_dropout`、`--tactile_noise_std`）
 对该任务同样可用，作用在 master 读到的 teacher 触觉观测上。
 
-输出目录：`outputs/hora/revo3_right/<run>/hier_nn/{best_reward,best_speed,last}.pth`，
-TensorBoard 在 `hier_tb/`。`best_speed` 依据**平滑角速度**（`activation_speed_ema`）
-选择，不是 episode reward。
-
-### 课程状态机
-
-| Stage | master | follower | XY 动作 | workspace / action scale |
-|---|---|---|---|---|
-| 0 `stage0_master` | 正常 PPO 训练 | 不采样、不更新 | 恒为 `[0, 0]` | initial（不生效） |
-| 1 `stage1_follower` | 权重与输入归一化全部冻结 | 独立 PPO 训练 | 采样 | `xy_curriculum_ramp_steps` 内 1 cm → 5 cm |
-| 2 `stage2_joint_finetune`（可选） | actor trunk/head/critic 解冻，触觉编码器仍冻结，lr = follower_lr × 0.07，并对 Stage-1 起始策略加 KL | 继续训练 | 采样 | 继续 ramp |
-
-- Stage 0 → 1 的门限是**每个 rollout 有符号平均角速度的 EMA 严格大于 0.8 rad/s**，
-  且连续满足 `activation_patience`（默认 5）个 epoch。**激活后永久锁存**，速度回落
-  不会退回 Stage 0。0.8 rad/s 只用于课程触发，**从不作为奖励门控**。
-- Stage 1 → 2 由 `hierarchical.joint_finetune_enable` 控制，默认 `false`
-  （即纯 follower 消融实验）。
-
-### 公平对比与速度上限实验
+#### 3.2.5 公平对比与速度上限实验
 
 1. **公平对比（A）**：默认 `high_speed_reward_enable: false`，奖励与
    `valvedriver_tactile` 完全一致，只额外扣一组很小的 XY 物理代价
@@ -418,7 +496,7 @@ TensorBoard 在 `hier_tb/`。`best_speed` 依据**平滑角速度**（`activatio
    `high_speed_target`，`high_speed_penalty_threshold` 之上再用
    `rotate_penalty_scale` 抑制超速。全程连续、无 0.8 rad/s 跳变。
 
-### 关键日志
+#### 3.2.6 关键日志
 
 `curriculum/hierarchical_stage`、`curriculum/activation_speed_ema`、
 `curriculum/activation_patience_counter`、`curriculum/xy_workspace`、
@@ -432,15 +510,9 @@ action_saturation_ratio,boundary_saturation_ratio,workspace_utilization}`、
 `screw/fraction_above_*` 也由基础 screw env 记录，所以 baseline 与 hierarchical
 两次 run 可以在 TensorBoard 中直接对齐比较。
 
-### 相关回归测试
-
-```bash
-PYTHONPATH=source/BrainCo_DexHand python -m pytest -q tests/test_hora_hierarchical_xy.py
-```
-
 ---
 
-## 层级主从策略：灵巧手 + 末端 XY + yaw（新增）
+### 3.3 `valvedriver_tactile_xyyaw` / `_yaw`（末端 yaw）
 
 在 `valvedriver_tactile_xy` 之上再加一个**真实的世界 Z 轴 revolute 关节**，用于验证
 "末端增加一个 yaw 自由度能否进一步提高阀门旋转速度"。原 `valvedriver_tactile` 与
@@ -449,7 +521,7 @@ PYTHONPATH=source/BrainCo_DexHand python -m pytest -q tests/test_hora_hierarchic
 同时提供**只有 yaw、没有平移**的消融任务 `valvedriver_tactile_yaw`（22 维动作，
 1 维 follower），用于区分"yaw 本身的贡献"和"XY 平移的贡献"。
 
-### 物理关节链
+#### 3.3.1 物理关节链
 
 `Revo3HandYawStageMixin._author_robot_stage_overrides` 在场景克隆前把整条链写进手的
 articulation：
@@ -492,7 +564,7 @@ world -> stage_yaw_joint (revolute, 世界 Z, ±0.70 rad) -> right_hand_base_lin
   pose-diff 惩罚、141 维 master 观测、42 维 student proprio frame、
   手指 torque/work 惩罚。
 
-### 动作与观测
+#### 3.3.2 动作与观测
 
 ```text
 action[:, 0:21]  -> 21 个灵巧手关节（原路径，未改动）
@@ -519,7 +591,7 @@ action[:, 23:24] -> 机械臂末端 yaw（位置目标增量，弧度）
 - actor **不读取**任何 privileged 状态；centralized critic 仍只额外读前 11 维
   base privileged info。
 
-### yaw 默认参数
+#### 3.3.3 yaw 默认参数
 
 | 配置项 | 默认值 | 单位 | 备注 |
 |---|---|---|---|
@@ -556,7 +628,7 @@ XY 与 yaw 可以共用同一批 per-env action delay 随机样本，但 target�
 smoothed action、归一化尺度与 effort buffer 全部独立；**米和弧度从不进入同一个
 scale 或 limit**。reset 时 8 个 yaw controller buffer 全部清零，不跨 episode 泄漏。
 
-> 调参提示：`yaw_acceleration_limit * dt² = 0.03 rad`（20 Hz）大于
+> **调参提示**：`yaw_acceleration_limit * dt² = 0.03 rad`（20 Hz）大于
 > `yaw_action_scale_final = 0.020 rad`，所以满量程指令一步到位，只有满量程**反向**
 > （0.04 rad 摆动）会被限到 2 个控制步——这是有意的平滑，不是 clamp bug。
 >
@@ -570,7 +642,7 @@ scale 或 limit**。reset 时 8 个 yaw controller buffer 全部清零，不跨 
 > 复训后请核对：`yaw/action_saturation_ratio < 0.3`、`yaw/effort / 1.5 < 0.5`、
 > `yaw/tracking_error` 明显下降（第一版是 0.081 rad）、`yaw_cost/jerk < 1`。
 
-### 训练
+#### 3.3.4 训练
 
 ```bash
 # XY + yaw（推荐主实验）
@@ -616,7 +688,9 @@ python scripts/hora/train.py --task valvedriver_tactile_yaw --algo HierarchicalP
 `--train_cfg` 可以省略：两个新任务会分别自动选用
 `valvedriver_tactile_frame813_xyyaw` 与 `valvedriver_tactile_frame813_yaw`。
 
-### 三阶段课程（与 XY 任务同一状态机）
+#### 3.3.5 三阶段课程：yaw 任务的差异
+
+状态机与 [3.1.1](#311-三阶段课程) 完全相同，下面只列 yaw 任务特有的三点。
 
 | Stage | master | follower | stage 动作 | workspace / action scale |
 |---|---|---|---|---|
@@ -624,19 +698,25 @@ python scripts/hora/train.py --task valvedriver_tactile_yaw --algo HierarchicalP
 | 1 `stage1_follower` | 权重与输入归一化全部冻结 | 3 维 `[x, y, yaw]` 一起训练 | 采样 | 同步 ramp（见下） |
 | 2 `stage2_joint_finetune` | actor trunk / 21 维 head / critic 解冻，触觉编码器冻结，lr = follower_lr × 0.07，对 Stage-1 起始策略加 KL | 继续训练 | 采样 | 继续 ramp |
 
-- **Stage 0 机械锁死（重要）**：零动作**不等于**零位。yaw PD 在
-  `yaw_effort_limit / yaw_pgain = 37.5 mrad` 误差处就饱和，抓握反力矩会把手腕一路
-  推到硬限位——实测 34 个 Stage-0 epoch 后 `yaw/position` 已漂到 −0.47 rad（−27°）、
-  17–35% 的环境贴在 −0.70 rad 硬限位上，而策略输出始终是 0。因此 follower 未激活时，
-  环境用 `write_joint_position_limit_to_sim` 把**全部 stage 关节的位置限位**压到
-  ±`stage_lock_tolerance_{m,rad}`（默认 1e-4）。PhysX 的限位是硬约束，不受 drive
-  `maxForce` 限制，所以 Stage 0 严格等价于"手腕刚性固定"的 baseline；力矩上限**从未
-  被提高**，也没有任何 teleport。锁死状态下 PD 误差 ≈ 0，因此 yaw/XY 的全部物理代价
-  在 Stage 0 自然为 0。激活的那一刻限位恢复为 authored 硬限位，永不回锁。
-  开关：`stage_lock_when_follower_inactive`（默认 `true`）；TensorBoard 看
-  `stage/locked` 与 `curriculum/stage_locked`。
-  > 注意：`valvedriver_tactile_xy` 基线不受影响（它没有这个 mixin），其 XY 滑台在
-  > Stage 0 的漂移只有 ~1 mm（`xy_cost/boundary = 0.000`），本来就可忽略。
+**（a）Stage 0 机械锁死（重要）**
+
+零动作**不等于**零位。第一版参数下 yaw PD 在
+`yaw_effort_limit / yaw_pgain = 37.5 mrad` 误差处就饱和，抓握反力矩会把手腕一路
+推到硬限位——实测 34 个 Stage-0 epoch 后 `yaw/position` 已漂到 −0.47 rad（−27°）、
+17–35% 的环境贴在 −0.70 rad 硬限位上，而策略输出始终是 0。因此 follower 未激活时，
+环境用 `write_joint_position_limit_to_sim` 把**全部 stage 关节的位置限位**压到
+±`stage_lock_tolerance_{m,rad}`（默认 1e-4）。PhysX 的限位是硬约束，不受 drive
+`maxForce` 限制，所以 Stage 0 严格等价于"手腕刚性固定"的 baseline；力矩上限**从未
+被提高**，也没有任何 teleport。锁死状态下 PD 误差 ≈ 0，因此 yaw/XY 的全部物理代价
+在 Stage 0 自然为 0。激活的那一刻限位恢复为 authored 硬限位，永不回锁。
+开关：`stage_lock_when_follower_inactive`（默认 `true`）；TensorBoard 看
+`stage/locked` 与 `curriculum/stage_locked`。
+
+> 注意：`valvedriver_tactile_xy` 基线不受影响（它没有这个 mixin），其 XY 滑台在
+> Stage 0 的漂移只有 ~1 mm（`xy_cost/boundary = 0.000`），本来就可忽略。
+
+**（b）同步激活与同步课程**
+
 - **同步激活**：Stage 0 → 1 只有**一个**锁存点——每 rollout 有符号平均角速度的 EMA
   严格大于 0.8 rad/s 且连续 `activation_patience`（默认 5）个 epoch。XY 与 yaw 在
   **完全相同的 `agent_step`** 激活，结构上不可能分开。激活后永久锁存。
@@ -647,21 +727,21 @@ python scripts/hora/train.py --task valvedriver_tactile_yaw --algo HierarchicalP
 
   | progress | XY action scale | XY workspace | yaw action scale | yaw workspace |
   |---|---|---|---|---|
-  | 0.00 | 0.002 m | 0.01 m | 0.015 rad | 0.15 rad |
-  | 0.50 | 0.0035 m | 0.03 m | 0.0275 rad | 0.375 rad |
-  | 1.00 | 0.005 m | 0.05 m | 0.040 rad | 0.60 rad |
+  | 0.00 | 0.002 m | 0.01 m | 0.005 rad | 0.05 rad |
+  | 0.50 | 0.0035 m | 0.03 m | 0.0125 rad | 0.15 rad |
+  | 1.00 | 0.005 m | 0.05 m | 0.020 rad | 0.25 rad |
 
   "同步"指 progress 与激活时刻同步，**不是**把米和弧度设成同一个数值。
-- Stage 1 → 2 由 `hierarchical.joint_finetune_enable` 控制。两个 yaw YAML 里
-  **默认 `true`** 且 `follower_only_steps: 5000000`（从 50M 缩短）：master 是对着
-  刚性手腕学会步态的，Stage 1 全程冻结、无法补偿旋转的接触系——首轮实测正是在激活后
-  速度从 0.79 掉到 0.63 rad/s。提早进入联合微调让 master 能适应会动的手腕。
-  XY 基线 YAML 仍是 `false`（保持原基线不变）。
-- Stage 2 中 master 与 follower 在**同一个 rollout** 内各自执行 optimizer step，
-  共享 team reward，但保留各自的 PPO ratio、value、optimizer 与 normalizer；
-  follower loss 不会反传进 master。
 
-### yaw 物理代价与诊断
+**（c）提早进入 Stage 2**
+
+Stage 1 → 2 由 `hierarchical.joint_finetune_enable` 控制。两个 yaw YAML 里
+**默认 `true`** 且 `follower_only_steps: 5000000`（从 50M 缩短）：master 是对着
+刚性手腕学会步态的，Stage 1 全程冻结、无法补偿旋转的接触系——首轮实测正是在激活后
+速度从 0.79 掉到 0.63 rad/s。提早进入联合微调让 master 能适应会动的手腕。
+XY 基线 YAML 仍是 `false`（保持原基线不变）。
+
+#### 3.3.6 yaw 物理代价与诊断
 
 yaw 不是免费能源：与 XY 同风格的一组归一化非正代价（默认权重 ≤ 0.05）——
 速度 / 加速度 / 加加速度 / 力矩 / 机械功率 / 边界饱和。yaw 力矩**不计入**
@@ -686,7 +766,9 @@ screw/reward_excluding_stage_cost  # 扣除 stage 代价后的奖励 -> 跨任�
 `reward/` 下，所以在 TensorBoard 里 `yaw/stage_reward` 显示为
 `reward/yaw_stage_reward`，`yaw_penalty/effort` 显示为 `reward/yaw_penalty_effort`。
 
-### 跨任务对比口径（重要）
+全部已有的 `xy/*`、`xy_cost/*`、`xy_penalty/*`、`curriculum/xy_*` 日志保持不变。
+
+#### 3.3.7 跨任务对比口径（重要）
 
 `valvedriver_tactile{,_xy,_xyyaw,_yaw}` 的**奖励函数不同**——yaw 任务额外扣一整套
 yaw 代价（第一版参数实测 −0.278/step ≈ **−223/episode**）。所以
@@ -698,9 +780,7 @@ yaw 代价（第一版参数实测 −0.278/step ≈ **−223/episode**）。所
 3. `joint_finetune_enable` 目前 xy=`false`、yaw 系=`true`；做严格 head-to-head 时
    两边必须一致（要么两边都开，要么都关）。
 
-全部已有的 `xy/*`、`xy_cost/*`、`xy_penalty/*`、`curriculum/xy_*` 日志保持不变。
-
-### 回放
+#### 3.3.8 回放
 
 ```bash
 python scripts/hora/play.py \
@@ -718,18 +798,44 @@ python scripts/hora/play.py \
 - 回放冒烟 checkpoint 时要带上对应的 `--train_cfg ..._smoke`，否则 follower MLP
   宽度不匹配（这是原有的严格加载行为）。
 
-### checkpoint 兼容策略
+---
 
-- checkpoint format marker 未改动（仍是 `hora_hierarchical_ppo_v1`），payload 新增
-  可选字段：`master_action_dim`、`follower_action_dim`、`follower_obs_dim`、
-  `env_action_dim`、`stage_dof_names`、`stage_curriculum_progress/ramp_steps`。
-- 老 checkpoint 缺这些字段时，从 follower 权重形状反推维度，同样能被正确识别。
-- **维度不匹配时明确报错**：把 2 维 XY follower checkpoint 交给 3 维任务会得到
-  `follower_action_dim 2 != 3 / follower_obs_dim 159 != 164` 的显式错误。
-  **没有**权重迁移器，也**绝不**用 `strict=False` 静默半加载。
-- 已有的普通 21 维 master checkpoint 仍可通过 `--master_checkpoint` 严格热启动。
+## 4. 附录
 
-### 相关回归测试
+### 4.1 Smoke 配置
+
+| 配置 | 用途 |
+|---|---|
+| `Revo3HandScrewTactileSmoke` | screw/valve 快速冒烟 |
+| `Revo3HandScrewTactileGRUSmoke` | GRU 学生冒烟 |
+| `valvedriver_tactile_frame813_xy_smoke` | 层级主从策略冒烟（覆盖三个课程阶段） |
+| `valvedriver_tactile_frame813_xyyaw_smoke` | XY + yaw 层级策略冒烟 |
+| `valvedriver_tactile_frame813_yaw_smoke` | 只有 yaw 的层级策略冒烟 |
+
+### 4.2 回放速查
+
+```bash
+python scripts/hora/play.py --task valvedriver_tactile \
+  --checkpoint outputs/.../stage2_nn/model_best.ckpt \
+  --train_cfg Revo3HandScrewTactile --num_envs 16
+```
+
+层级主从策略见[上文](#3-层级主从策略hierarchicalppo)：
+
+```bash
+python scripts/hora/play.py --task valvedriver_tactile_xy \
+  --checkpoint outputs/.../hier_nn/best_speed.pth --num_envs 16
+python scripts/hora/play.py --task valvedriver_tactile_xyyaw \
+  --checkpoint outputs/.../hier_nn/best_speed.pth --num_envs 16
+python scripts/hora/play.py --task valvedriver_tactile_yaw \
+  --checkpoint outputs/.../hier_nn/best_speed.pth --num_envs 16
+```
+
+### 4.3 回归测试
+
+Frame813 教师相关：见 [2.2.7](#227-相关回归测试)。
+
+层级主从策略：
 
 ```bash
 PYTHONPATH=source/BrainCo_DexHand python -m pytest -q \
@@ -749,35 +855,6 @@ LD_LIBRARY_PATH="$USDLIB/bin:$PHYSXDIR/bin:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH" \
 python -m pytest -q tests/test_hora_hierarchical_xyyaw.py
 ```
 
-## Smoke 配置
-
-| 配置 | 用途 |
-|---|---|
-| `Revo3HandScrewTactileSmoke` | screw/valve 快速冒烟 |
-| `Revo3HandScrewTactileGRUSmoke` | GRU 学生冒烟 |
-| `valvedriver_tactile_frame813_xy_smoke` | 层级主从策略冒烟（覆盖三个课程阶段） |
-| `valvedriver_tactile_frame813_xyyaw_smoke` | XY + yaw 层级策略冒烟 |
-| `valvedriver_tactile_frame813_yaw_smoke` | 只有 yaw 的层级策略冒烟 |
-
-## 回放
-
-```bash
-python scripts/hora/play.py --task valvedriver_tactile \
-  --checkpoint outputs/.../stage2_nn/model_best.ckpt \
-  --train_cfg Revo3HandScrewTactile --num_envs 16
-```
-
-层级主从策略见[上文](#层级主从策略灵巧手--二维机械臂平移新增)：
-
-```bash
-python scripts/hora/play.py --task valvedriver_tactile_xy \
-  --checkpoint outputs/.../hier_nn/best_speed.pth --num_envs 16
-python scripts/hora/play.py --task valvedriver_tactile_xyyaw \
-  --checkpoint outputs/.../hier_nn/best_speed.pth --num_envs 16
-python scripts/hora/play.py --task valvedriver_tactile_yaw \
-  --checkpoint outputs/.../hier_nn/best_speed.pth --num_envs 16
-```
-
-## 相关文档
+### 4.4 相关文档
 
 - 网络结构：[`Model.md`](source/BrainCo_DexHand/BrainCo_DexHand/tasks/direct/hora_screw/Model.md)

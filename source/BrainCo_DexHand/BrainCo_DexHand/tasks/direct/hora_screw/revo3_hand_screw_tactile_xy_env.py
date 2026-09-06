@@ -70,11 +70,13 @@ class Revo3HandScrewTactileXYEnv(Revo3HandScrewTactileEnv):
         # report them through ``_num_extra_action_dofs``; for this task the hook
         # returns exactly ``NUM_XY_DOFS``.
         num_stage_dofs = self._num_extra_action_dofs()
-        if self.num_robot_dofs != self.num_finger_dofs + num_stage_dofs:
+        num_passive_dofs = self._num_passive_stage_dofs()
+        expected_robot_dofs = self.num_finger_dofs + num_stage_dofs + num_passive_dofs
+        if self.num_robot_dofs != expected_robot_dofs:
             raise RuntimeError(
-                f"Expected {self.num_finger_dofs} finger DOFs + {num_stage_dofs} stage DOFs "
-                f"= {self.num_finger_dofs + num_stage_dofs} robot DOFs, got {self.num_robot_dofs}. "
-                f"Articulation joints: {self.hand.joint_names}"
+                f"Expected {self.num_finger_dofs} finger DOFs + {num_stage_dofs} actuated stage "
+                f"DOFs + {num_passive_dofs} passive stage DOFs = {expected_robot_dofs} robot DOFs, "
+                f"got {self.num_robot_dofs}. Articulation joints: {self.hand.joint_names}"
             )
         overlap = set(self.xy_dof_indices) & set(self.finger_dof_indices)
         if overlap:
@@ -128,6 +130,15 @@ class Revo3HandScrewTactileXYEnv(Revo3HandScrewTactileEnv):
 
     def _num_extra_action_dofs(self) -> int:
         return NUM_XY_DOFS
+
+    def _num_passive_stage_dofs(self) -> int:
+        """Number of non-actuated stage DOFs, e.g. passive mount compliance.
+
+        Zero whenever the hand mount is a rigid weld in every direction the
+        follower does not command. Variants that release those welds override
+        this so the DOF-count contract above stays exact.
+        """
+        return 0
 
     def _validate_stage_joint_limits(self) -> None:
         """Fail fast if the authored prismatic limits do not match the config."""
@@ -419,8 +430,24 @@ class Revo3HandScrewTactileXYEnv(Revo3HandScrewTactileEnv):
         effort = self.xy_effort
         power = effort * velocity
 
-        velocity_limit = max(float(self.cfg.xy_velocity_limit), 1.0e-6)
-        acceleration_limit = max(float(self.cfg.xy_acceleration_limit), 1.0e-6)
+        # Cost references normalize MEASURED motion. They default to the
+        # commanded clamp limits, which is the historical behaviour, but a task
+        # may separate the two so a contact transient the policy never
+        # commanded cannot dominate the penalty; see valvedriver_tactile_xy96.
+        velocity_limit = max(
+            float(getattr(self.cfg, "xy_velocity_cost_reference", self.cfg.xy_velocity_limit)),
+            1.0e-6,
+        )
+        acceleration_limit = max(
+            float(
+                getattr(
+                    self.cfg,
+                    "xy_acceleration_cost_reference",
+                    self.cfg.xy_acceleration_limit,
+                )
+            ),
+            1.0e-6,
+        )
         jerk_reference = max(float(self.cfg.xy_jerk_reference), 1.0e-6)
         effort_limit = max(float(self.cfg.xy_effort_limit), 1.0e-6)
         power_reference = max(effort_limit * velocity_limit, 1.0e-6)
