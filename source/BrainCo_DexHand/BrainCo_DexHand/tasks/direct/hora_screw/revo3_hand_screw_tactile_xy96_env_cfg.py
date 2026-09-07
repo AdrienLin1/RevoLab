@@ -74,22 +74,22 @@ class Revo3HandScrewTactileXY96MixinCfg(Revo3HandScrewTactileXYMixinCfg):
     # 0.75 s, the timescale of a single finger handover (coord_delta_h = 8
     # steps), instead of the previous 0.5 s for a five-times-larger workspace.
     # As with the workspace, initial == final: no Stage-1 ramp on this knob.
-    xy_action_scale_initial = 0.001  # m per unit action (was 0.0004, ramped)
-    xy_action_scale_final = 0.001  # m per unit action (was 0.005)
+    xy_action_scale_initial = 0.002  # m per unit action (was 0.0004, ramped)
+    xy_action_scale_final = 0.002 # m per unit action (was 0.005)
     # Velocity clamp now coincides exactly with the action scale
     # (0.02 m/s * 0.05 s = 0.001 m = one full-action increment) instead of
     # sitting 50% above it and never triggering.  Coincident rather than
     # binding is deliberate: it keeps a single speed number that is true both
     # as a clamp and as the cost normalizer below.
-    xy_velocity_limit = 0.02  # m/s  (was 0.15)
-    xy_velocity_obs_scale = 0.02  # m/s (validator: == xy_velocity_limit)
+    xy_velocity_limit = 0.04  # m/s  (was 0.15)
+    xy_velocity_obs_scale = 0.04  # m/s (validator: == xy_velocity_limit)
     # Acceleration clamp: max increment change = a * dt^2 = 0.5 mm per step.
     # Measured effect: a commanded reversal takes 2 control steps instead of 1.
     # It is a mild, physically motivated rate limit -- a real wrist carrying a
     # ~2 kg hand does not reverse in 50 ms -- and NOT the main chatter fix; the
     # action scale and the smoothing filter do that work (see below).  At 0.4
     # and above the clamp stops binding at all, which is where the old 8.0 sat.
-    xy_acceleration_limit = 0.2  # m/s^2 (was 8.0)
+    xy_acceleration_limit = 0.4  # m/s^2 (was 8.0)
     # First-order action filter.  For an alternating +/-1 command the steady
     # state amplitude is (1 - s) / (1 + s): 0.33 at s = 0.5, 0.176 at s = 0.7.
     # DC gain stays 1, so slow compensation is untouched.  It is deliberately
